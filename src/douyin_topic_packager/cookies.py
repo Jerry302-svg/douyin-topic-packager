@@ -15,7 +15,7 @@ def load_cookies_from_storage_state(
     path = Path(storage_state_path)
     if not path.exists():
         return {}
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     allowed = tuple(domains)
     cookies: Dict[str, str] = {}
     for cookie in data.get("cookies") or []:
