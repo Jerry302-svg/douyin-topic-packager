@@ -69,13 +69,21 @@ def analyze_comments_step(
     comments_path: str | Path,
     output_dir: str | Path = "outputs/topic_packages",
     llm_client: LLMClient | None = None,
+    conversion_mode: str = "balanced",
 ) -> Dict[str, str]:
     videos = load_videos(videos_path)
     comments = load_comments(comments_path)
     pain_signals = build_pain_signals(videos, comments)
     angle_candidates = build_angle_candidates(pain_signals)
     scorecards = validate_angles(angle_candidates, pain_signals)
-    packages = generate_topic_packages(videos, pain_signals, angle_candidates, scorecards, llm_client=llm_client)
+    packages = generate_topic_packages(
+        videos,
+        pain_signals,
+        angle_candidates,
+        scorecards,
+        llm_client=llm_client,
+        conversion_mode=conversion_mode,
+    )
 
     root = Path(output_dir)
     run = TopicPackageRun(
@@ -116,6 +124,7 @@ async def run_topic_package_pipeline(
     storage_state_path: str | Path = "runtime/douyin_storage_state.json",
     max_comments_per_video: int = 0,
     llm_client: LLMClient | None = None,
+    conversion_mode: str = "balanced",
 ) -> Dict[str, str]:
     collected = await collect_profile_step(
         profile_url,
@@ -137,5 +146,6 @@ async def run_topic_package_pipeline(
         comments_path=commented["comments"],
         output_dir=output_dir,
         llm_client=llm_client,
+        conversion_mode=conversion_mode,
     )
     return {**collected, **commented, **analyzed}

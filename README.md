@@ -72,6 +72,25 @@ python -m douyin_topic_packager run \
   --llm
 ```
 
+可以控制选题包里的 CTA 转化强度：
+
+```bash
+# 默认：平衡，不激进也不太弱
+python -m douyin_topic_packager run --profile-url "抖音主页分享链接" --llm --conversion-mode balanced
+
+# 克制：适合知识分享、合规要求更高的账号
+python -m douyin_topic_packager run --profile-url "抖音主页分享链接" --llm --conversion-mode conservative
+
+# 强转化：适合希望评论区更容易留下具体线索的账号
+python -m douyin_topic_packager run --profile-url "抖音主页分享链接" --llm --conversion-mode strong
+```
+
+三个模式的区别：
+
+- `balanced`：默认模式，引导用户描述具体场景，但不承诺结果。
+- `conservative`：更克制，不做个案判断，不主动索要敏感金额。
+- `strong`：更直接，引导用户留下阶段、障碍或决策点，但仍不允许保证结果。
+
 也可以分步跑：
 
 ```bash

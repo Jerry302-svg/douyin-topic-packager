@@ -7,6 +7,29 @@ from .llm import LLMClient, parse_json_from_llm_text
 from .schemas import AngleCandidate, PainSignal, TopicPackage, ValidationScorecard, VideoItem
 
 
+CONVERSION_MODE_INSTRUCTIONS = {
+    "balanced": (
+        "conversion_mode=balanced. CTA can guide comments with a concrete situation, "
+        "but must not promise a result or pretend to diagnose individual cases."
+    ),
+    "conservative": (
+        "conversion_mode=conservative. CTA should be soft and educational. "
+        "avoid direct diagnosis, avoid asking for sensitive amounts, and prefer "
+        "phrases like asking users to describe a general scenario for future content."
+    ),
+    "strong": (
+        "conversion_mode=strong. CTA can be more direct and conversion-oriented, "
+        "asking users to describe their specific stage, obstacle, or decision point. "
+        "Still avoid guaranteed outcomes, fabricated authority, or absolute promises."
+    ),
+}
+
+
+def normalize_conversion_mode(value: str | None) -> str:
+    mode = (value or "balanced").strip().lower().replace("_", "-")
+    return mode if mode in CONVERSION_MODE_INSTRUCTIONS else "balanced"
+
+
 def _text(value: Any) -> str:
     return " ".join(str(value or "").replace("\n", " ").split()).strip()
 
@@ -21,12 +44,24 @@ def _fit_score(value: Any, default: int = 78) -> int:
     return max(0, min(int(round(score)), 100))
 
 
+def _fallback_cta(pain_point: str, conversion_mode: str) -> str:
+    pain = _text(pain_point)[:24] or "这个问题"
+    mode = normalize_conversion_mode(conversion_mode)
+    if mode == "conservative":
+        return f"如果你也遇到过类似「{pain}」的情况，可以留言说一个大概场景，后续内容再拆常见判断思路。"
+    if mode == "strong":
+        return f"评论区说清楚你现在卡在「{pain}」的哪一步：刚开始、已经处理过，还是准备做决定，下一条按真实情况拆。"
+    return f"评论区留下你卡住的具体场景、已经试过的方法和最想解决的一步，后续内容继续拆「{pain}」应该先从哪里切。"
+
+
 def build_topic_package_messages(
     videos: List[VideoItem],
     pain_signals: List[PainSignal],
     angle_candidates: List[AngleCandidate],
     scorecards: List[ValidationScorecard],
+    conversion_mode: str = "balanced",
 ) -> List[Dict[str, str]]:
+    conversion_mode = normalize_conversion_mode(conversion_mode)
     payload = {
         "videos": [
             {
@@ -55,6 +90,7 @@ def build_topic_package_messages(
         "Do not output markdown, comments, code fences, XML tags, or hidden reasoning. "
         "If a string needs quotation marks, use Chinese corner quotes instead of raw English double quotes. "
         "The pain_point field must be a concise human-readable pain summary, not a copied title, hashtag, or raw comment."
+        f" {CONVERSION_MODE_INSTRUCTIONS[conversion_mode]}"
     )
     user_prompt = (
         "请生成 3-8 个 topic_packages。每个对象必须包含："
@@ -91,7 +127,12 @@ def build_topic_package_repair_messages(raw_text: str) -> List[Dict[str, str]]:
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
 
-def normalize_llm_topic_packages(raw_text: str, pain_signals: List[PainSignal]) -> List[TopicPackage]:
+def normalize_llm_topic_packages(
+    raw_text: str,
+    pain_signals: List[PainSignal],
+    conversion_mode: str = "balanced",
+) -> List[TopicPackage]:
+    conversion_mode = normalize_conversion_mode(conversion_mode)
     try:
         parsed = parse_json_from_llm_text(raw_text)
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -146,7 +187,7 @@ def normalize_llm_topic_packages(raw_text: str, pain_signals: List[PainSignal]) 
                 production_suggestions=[_text(value) for value in suggestions if _text(value)][:6],
                 fit_score=_fit_score(item.get("fit_score")),
                 why_worth_shooting=_text(item.get("why_worth_shooting") or item.get("why_it_matters") or ""),
-                metadata={"generated_by": "llm", "llm_raw": item},
+                metadata={"generated_by": "llm", "conversion_mode": conversion_mode, "llm_raw": item},
             )
         )
     normalized.sort(key=lambda item: item.fit_score, reverse=True)
@@ -158,7 +199,9 @@ def fallback_topic_packages(
     candidates: List[AngleCandidate],
     scorecards: List[ValidationScorecard],
     limit: int = 6,
+    conversion_mode: str = "balanced",
 ) -> List[TopicPackage]:
+    conversion_mode = normalize_conversion_mode(conversion_mode)
     signal_by_pain = {item.pain_point: item for item in pain_signals}
     score_by_angle = {item.angle: item for item in scorecards}
     packages: List[TopicPackage] = []
@@ -177,12 +220,12 @@ def fallback_topic_packages(
                 opening_hook=candidate.opening_hook,
                 recommended_angle=candidate.angle,
                 proof_needed=candidate.proof_needed,
-                cta_direction=candidate.cta_direction,
+                cta_direction=_fallback_cta(candidate.pain_point, conversion_mode),
                 risk_notes=(score.risk_notes if score else ["不要凭空编造案例或确定性结果"])[:5],
                 production_suggestions=["适合口播", "不需要复杂场景", "用评论痛点开头", "适合 60-90 秒"],
                 fit_score=int(score.total_score if score else signal.signal_strength),
                 why_worth_shooting=f"评论和标题里已经出现相关信号，证据数 {signal.evidence_count}，适合做成可直接回应用户疑问的内容。",
-                metadata={"generated_by": "fallback_rules"},
+                metadata={"generated_by": "fallback_rules", "conversion_mode": conversion_mode},
             )
         )
         if len(packages) >= limit:
@@ -196,15 +239,17 @@ def generate_topic_packages(
     candidates: List[AngleCandidate],
     scorecards: List[ValidationScorecard],
     llm_client: LLMClient | None = None,
+    conversion_mode: str = "balanced",
 ) -> List[TopicPackage]:
+    conversion_mode = normalize_conversion_mode(conversion_mode)
     if llm_client is not None:
         try:
             raw = llm_client.complete(
-                build_topic_package_messages(videos, pain_signals, candidates, scorecards),
+                build_topic_package_messages(videos, pain_signals, candidates, scorecards, conversion_mode=conversion_mode),
                 temperature=0.35,
                 max_tokens=6000,
             )
-            packages = normalize_llm_topic_packages(raw, pain_signals)
+            packages = normalize_llm_topic_packages(raw, pain_signals, conversion_mode=conversion_mode)
             if packages:
                 return packages
             repaired = llm_client.complete(
@@ -212,9 +257,9 @@ def generate_topic_packages(
                 temperature=0.0,
                 max_tokens=6000,
             )
-            packages = normalize_llm_topic_packages(repaired, pain_signals)
+            packages = normalize_llm_topic_packages(repaired, pain_signals, conversion_mode=conversion_mode)
             if packages:
                 return packages
         except Exception as exc:  # noqa: BLE001
             print(f"[WARN] LLM 选题包生成失败，使用规则版结果：{exc}")
-    return fallback_topic_packages(pain_signals, candidates, scorecards)
+    return fallback_topic_packages(pain_signals, candidates, scorecards, conversion_mode=conversion_mode)

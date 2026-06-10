@@ -7,6 +7,7 @@ from pathlib import Path
 from .cookies import save_douyin_login_state
 from .io_utils import read_json
 from .llm import LLMClient, load_dotenv
+from .packager import CONVERSION_MODE_INSTRUCTIONS
 from .pipeline import analyze_comments_step, collect_comments_step, collect_profile_step, run_topic_package_pipeline
 
 
@@ -26,6 +27,15 @@ def _build_llm_client(args: argparse.Namespace) -> LLMClient | None:
         model=getattr(args, "llm_model", "") or "",
         api_key=getattr(args, "llm_api_key", "") or "",
         base_url=getattr(args, "llm_base_url", "") or "",
+    )
+
+
+def _add_conversion_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--conversion-mode",
+        choices=sorted(CONVERSION_MODE_INSTRUCTIONS),
+        default="balanced",
+        help="CTA conversion strength: balanced/conservative/strong",
     )
 
 
@@ -66,6 +76,7 @@ def main() -> None:
     analyze.add_argument("--sec-uid", default="", help="账号 sec_uid；留空时优先读取 meta")
     analyze.add_argument("--output-dir", default="outputs/topic_packages", help="输出目录")
     _add_llm_args(analyze)
+    _add_conversion_args(analyze)
 
     run = subparsers.add_parser("run", help="从主页分享链接直接生成选题包")
     run.add_argument("--profile-url", required=True, help="抖音博主主页分享链接或包含链接的整段分享文本")
@@ -74,6 +85,7 @@ def main() -> None:
     run.add_argument("--output-dir", default="outputs/topic_packages", help="输出目录")
     run.add_argument("--max-comments-per-video", type=int, default=0, help="每条视频最多采集多少评论，0 表示不限")
     _add_llm_args(run)
+    _add_conversion_args(run)
 
     args = parser.parse_args()
     if args.command == "login":
@@ -117,6 +129,7 @@ def main() -> None:
             comments_path=args.comments,
             output_dir=args.output_dir,
             llm_client=_build_llm_client(args),
+            conversion_mode=args.conversion_mode,
         )
         _print_outputs(outputs)
         return
@@ -130,6 +143,7 @@ def main() -> None:
                 storage_state_path=args.state,
                 max_comments_per_video=args.max_comments_per_video,
                 llm_client=_build_llm_client(args),
+                conversion_mode=args.conversion_mode,
             )
         )
         _print_outputs(outputs)
