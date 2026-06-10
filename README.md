@@ -124,6 +124,6 @@ topic_packages.md
 
 ## 第三方声明
 
-本项目的 Cookie 登录体验参考公开抖音下载工具的通用做法：使用 Playwright 打开浏览器，由用户自行登录后把 Cookie 保存到本地。
+本项目的 Cookie 登录、主页解析、Douyin Web API 调用、X-Bogus / msToken 等部分复用或参考了公开 `douyin-downloader` / Douyin-TikTok downloader 生态里的通用实现思路。
 
-`src/douyin/` 下包含来自公开 Douyin/TikTok 下载生态的 API 客户端、X-Bogus、msToken 等实现思路或许可证头部。使用、修改或分发时请保留相关版权和许可证声明。
+`src/douyin/` 下包含来自相关开源下载工具生态的 API 客户端、签名参数和 Cookie 使用逻辑。使用、修改或分发时请保留原项目的版权、许可证和 NOTICE 声明；本项目本身以 Apache-2.0 发布。
