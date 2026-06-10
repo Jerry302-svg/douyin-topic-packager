@@ -17,6 +17,22 @@ def _clean_text(value: str) -> str:
     return " ".join(str(value or "").replace("\n", " ").split()).strip()
 
 
+def _strip_hashtags(value: str) -> str:
+    text = re.sub(r"#\S+", "", str(value or ""))
+    return _clean_text(text).strip(" ，。！？；、")
+
+
+def _label_from_text(value: str, fallback_keywords: List[str] | None = None, max_len: int = 46) -> str:
+    text = _strip_hashtags(value)
+    if not text:
+        text = " / ".join((fallback_keywords or [])[:3])
+    text = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9，。！？；、：:,.?!\s]", "", text)
+    text = _clean_text(text).strip(" ，。！？；、")
+    if len(text) > max_len:
+        text = text[:max_len].rstrip("，。！？；、 ")
+    return text
+
+
 def _keywords(text: str, limit: int = 8) -> List[str]:
     tokens = re.findall(r"[\u4e00-\u9fff]{2,8}|[A-Za-z0-9_]{3,}", text)
     cleaned = [token for token in tokens if token not in STOP_WORDS and len(token) >= 2]
@@ -69,8 +85,9 @@ def build_pain_signals(videos: List[VideoItem], comments: List[CommentItem], lim
 
     for video in videos:
         title_keywords = _keywords(f"{video.title} {video.desc}", limit=4)
-        if title_keywords:
-            add_signal(" / ".join(title_keywords[:3]), video.title or video.desc, video, 12 + min(video.comment_count, 50))
+        title_label = _label_from_text(video.title or video.desc, title_keywords)
+        if title_label:
+            add_signal(title_label, video.title or video.desc or title_label, video, 12 + min(video.comment_count, 50))
 
     for comment in comments:
         text = _clean_text(comment.text)
@@ -83,7 +100,7 @@ def build_pain_signals(videos: List[VideoItem], comments: List[CommentItem], lim
             continue
         if score <= 0 and len(text) < 8:
             continue
-        label = " / ".join(kws[:3])
+        label = _label_from_text(text, kws)
         add_signal(label, text[:180], video, max(8, score))
 
     signals: List[PainSignal] = []

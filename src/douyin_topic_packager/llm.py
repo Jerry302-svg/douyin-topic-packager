@@ -234,6 +234,10 @@ class LLMClient:
 def parse_json_from_llm_text(text: str) -> Any:
     cleaned = (text or "").strip()
     cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.S | re.I).strip()
+    if "</think>" in cleaned:
+        cleaned = cleaned.split("</think>", 1)[1].strip()
+    if "<think>" in cleaned:
+        cleaned = re.sub(r"<think>.*", "", cleaned, flags=re.S | re.I).strip()
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned).strip()
     cleaned = re.sub(r"\s*```$", "", cleaned).strip()
     if not cleaned:

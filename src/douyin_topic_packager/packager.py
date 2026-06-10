@@ -50,6 +50,12 @@ def build_topic_package_messages(
         "不要写报告腔，不要写“围绕某痛点讲一条内容”。"
         "最终只能输出严格 JSON object，不要 markdown、解释或思考过程。"
     )
+    system_prompt += (
+        " JSON must be the whole response: start with { and end with }. "
+        "Do not output markdown, comments, code fences, XML tags, or hidden reasoning. "
+        "If a string needs quotation marks, use Chinese corner quotes instead of raw English double quotes. "
+        "The pain_point field must be a concise human-readable pain summary, not a copied title, hashtag, or raw comment."
+    )
     user_prompt = (
         "请生成 3-8 个 topic_packages。每个对象必须包含："
         "brief_title, topic, pain_point, evidence, target_audience, opening_hook, "
@@ -68,8 +74,28 @@ def build_topic_package_messages(
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
 
+def build_topic_package_repair_messages(raw_text: str) -> List[Dict[str, str]]:
+    system_prompt = (
+        "You are a strict JSON repair tool. Return only one valid JSON object. "
+        "Do not add markdown, explanations, code fences, XML tags, or hidden reasoning. "
+        "Keep all Chinese content and field meanings unchanged. "
+        "The final JSON object must contain a topic_packages array."
+    )
+    user_prompt = (
+        "Repair the following model output into strict JSON. "
+        "Preserve the topic_packages content as much as possible. "
+        "If a value contains English double quotes, replace them with Chinese corner quotes. "
+        "Output JSON only.\n\n"
+        f"{raw_text[:12000]}"
+    )
+    return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+
+
 def normalize_llm_topic_packages(raw_text: str, pain_signals: List[PainSignal]) -> List[TopicPackage]:
-    parsed = parse_json_from_llm_text(raw_text)
+    try:
+        parsed = parse_json_from_llm_text(raw_text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
     if isinstance(parsed, list):
         parsed = {"topic_packages": parsed}
     if not isinstance(parsed, dict):
@@ -179,6 +205,14 @@ def generate_topic_packages(
                 max_tokens=6000,
             )
             packages = normalize_llm_topic_packages(raw, pain_signals)
+            if packages:
+                return packages
+            repaired = llm_client.complete(
+                build_topic_package_repair_messages(raw),
+                temperature=0.0,
+                max_tokens=6000,
+            )
+            packages = normalize_llm_topic_packages(repaired, pain_signals)
             if packages:
                 return packages
         except Exception as exc:  # noqa: BLE001

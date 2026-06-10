@@ -1,4 +1,4 @@
-from douyin_topic_packager.packager import fallback_topic_packages
+from douyin_topic_packager.packager import fallback_topic_packages, generate_topic_packages
 from douyin_topic_packager.reports import render_topic_packages_markdown
 from douyin_topic_packager.schemas import CommentItem, VideoItem
 from douyin_topic_packager.signals import build_angle_candidates, build_pain_signals, validate_angles
@@ -54,3 +54,27 @@ def test_markdown_report_is_clean_result():
     assert "可直接使用的选题包" in md
     assert "<think>" not in md
     assert "```json" not in md
+
+
+def test_generate_topic_packages_repairs_invalid_llm_json_once():
+    class FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, temperature=0.3, max_tokens=5000):
+            self.calls += 1
+            if self.calls == 1:
+                return '{"topic_packages":[{"brief_title":"bad "quote""}]}'
+            return (
+                '{"topic_packages":[{"brief_title":"fixed","topic":"fixed topic",'
+                '"pain_point":"pain","evidence":["comment"],"target_audience":"audience",'
+                '"opening_hook":"hook","recommended_angle":"angle","proof_needed":"proof",'
+                '"cta_direction":"cta","risk_notes":["risk"],'
+                '"production_suggestions":["suggestion"],"fit_score":88,'
+                '"why_worth_shooting":"worth"}]}'
+            )
+
+    packages = generate_topic_packages([], [], [], [], llm_client=FakeLLM())
+
+    assert packages[0].brief_title == "fixed"
+    assert packages[0].metadata["generated_by"] == "llm"

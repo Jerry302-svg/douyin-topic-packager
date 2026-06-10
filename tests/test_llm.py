@@ -6,6 +6,11 @@ def test_parse_json_from_llm_text_with_think_and_markdown():
     assert parse_json_from_llm_text(raw)["topic_packages"][0]["brief_title"] == "A"
 
 
+def test_parse_json_from_llm_text_with_prefix_after_think():
+    raw = "<think>hidden</think>\nHere is JSON:\n{\"topic_packages\": [{\"brief_title\": \"A\"}]}"
+    assert parse_json_from_llm_text(raw)["topic_packages"][0]["brief_title"] == "A"
+
+
 def test_provider_presets_include_mainstream_models():
     presets = provider_presets()
     for key in ["openai", "deepseek", "qwen", "kimi", "minimax", "anthropic", "gemini"]:
