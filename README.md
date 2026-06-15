@@ -115,6 +115,18 @@ topic_packages.md
 
 `topic_packages.md` 是给人看的干净报告；`topic_packages.json` 适合接入其他自动化流程。
 
+## 测试
+
+开发或维护时建议安装开发依赖后运行测试：
+
+```bash
+pip install -e ".[dev]"
+python -m pytest -q
+python -m compileall -q src tests
+```
+
+这些测试只覆盖链接解析、选题包生成、LLM 输出清洗、报告渲染和项目配置，不会真实登录抖音、采集评论或安装 Playwright 浏览器。
+
 ## 注意事项
 
 - 默认采集 Top20，并按评论数排序。
