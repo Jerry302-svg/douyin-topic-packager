@@ -1,6 +1,11 @@
-from douyin_topic_packager.packager import build_topic_package_messages, fallback_topic_packages, generate_topic_packages
+from douyin_topic_packager.packager import (
+    build_topic_package_messages,
+    fallback_topic_packages,
+    filter_topic_packages,
+    generate_topic_packages,
+)
 from douyin_topic_packager.reports import render_topic_packages_markdown
-from douyin_topic_packager.schemas import CommentItem, VideoItem
+from douyin_topic_packager.schemas import CommentItem, TopicPackage, VideoItem
 from douyin_topic_packager.signals import build_angle_candidates, build_pain_signals, validate_angles
 
 
@@ -18,6 +23,23 @@ def _sample_data():
         CommentItem(aweme_id="100", text="这个问题我也遇到了，最怕试了还是没效果", like_count=5),
     ]
     return videos, comments
+
+
+def _topic_package(title, score):
+    return TopicPackage(
+        brief_title=title,
+        topic=title,
+        pain_point=f"{title} pain",
+        evidence=["comment"],
+        target_audience="audience",
+        opening_hook="hook",
+        recommended_angle="angle",
+        proof_needed="proof",
+        cta_direction="cta",
+        risk_notes=["risk"],
+        production_suggestions=["suggestion"],
+        fit_score=score,
+    )
 
 
 def test_build_topic_package_chain_without_llm():
@@ -104,3 +126,55 @@ def test_generate_topic_packages_marks_conversion_mode():
 
     assert packages[0].metadata["generated_by"] == "llm"
     assert packages[0].metadata["conversion_mode"] == "strong"
+
+
+def test_filter_topic_packages_applies_min_score_and_limit():
+    packages = [
+        _topic_package("A", 92),
+        _topic_package("B", 77),
+        _topic_package("C", 88),
+        _topic_package("D", 81),
+    ]
+
+    filtered = filter_topic_packages(packages, min_fit_score=80, package_limit=2)
+
+    assert [item.brief_title for item in filtered] == ["A", "C"]
+
+
+def test_generate_topic_packages_filters_llm_results_by_score_and_limit():
+    class FakeLLM:
+        def complete(self, messages, temperature=0.3, max_tokens=5000):
+            return (
+                '{"topic_packages":['
+                '{"brief_title":"high","topic":"topic high","pain_point":"pain",'
+                '"evidence":["comment"],"target_audience":"audience",'
+                '"opening_hook":"hook","recommended_angle":"angle high","proof_needed":"proof",'
+                '"cta_direction":"cta","risk_notes":["risk"],'
+                '"production_suggestions":["suggestion"],"fit_score":92,'
+                '"why_worth_shooting":"worth"},'
+                '{"brief_title":"low","topic":"topic low","pain_point":"pain",'
+                '"evidence":["comment"],"target_audience":"audience",'
+                '"opening_hook":"hook","recommended_angle":"angle low","proof_needed":"proof",'
+                '"cta_direction":"cta","risk_notes":["risk"],'
+                '"production_suggestions":["suggestion"],"fit_score":72,'
+                '"why_worth_shooting":"worth"},'
+                '{"brief_title":"mid","topic":"topic mid","pain_point":"pain",'
+                '"evidence":["comment"],"target_audience":"audience",'
+                '"opening_hook":"hook","recommended_angle":"angle mid","proof_needed":"proof",'
+                '"cta_direction":"cta","risk_notes":["risk"],'
+                '"production_suggestions":["suggestion"],"fit_score":86,'
+                '"why_worth_shooting":"worth"}'
+                "]}"
+            )
+
+    packages = generate_topic_packages(
+        [],
+        [],
+        [],
+        [],
+        llm_client=FakeLLM(),
+        min_fit_score=80,
+        package_limit=1,
+    )
+
+    assert [item.brief_title for item in packages] == ["high"]

@@ -44,6 +44,19 @@ def _fit_score(value: Any, default: int = 78) -> int:
     return max(0, min(int(round(score)), 100))
 
 
+def filter_topic_packages(
+    packages: List[TopicPackage],
+    min_fit_score: int = 0,
+    package_limit: int = 0,
+) -> List[TopicPackage]:
+    min_score = max(0, min(int(min_fit_score or 0), 100))
+    limit = max(0, int(package_limit or 0))
+    filtered = [item for item in packages if int(item.fit_score or 0) >= min_score]
+    if limit:
+        return filtered[:limit]
+    return filtered
+
+
 def _fallback_cta(pain_point: str, conversion_mode: str) -> str:
     pain = _text(pain_point)[:24] or "这个问题"
     mode = normalize_conversion_mode(conversion_mode)
@@ -240,6 +253,8 @@ def generate_topic_packages(
     scorecards: List[ValidationScorecard],
     llm_client: LLMClient | None = None,
     conversion_mode: str = "balanced",
+    min_fit_score: int = 0,
+    package_limit: int = 0,
 ) -> List[TopicPackage]:
     conversion_mode = normalize_conversion_mode(conversion_mode)
     if llm_client is not None:
@@ -251,7 +266,7 @@ def generate_topic_packages(
             )
             packages = normalize_llm_topic_packages(raw, pain_signals, conversion_mode=conversion_mode)
             if packages:
-                return packages
+                return filter_topic_packages(packages, min_fit_score=min_fit_score, package_limit=package_limit)
             repaired = llm_client.complete(
                 build_topic_package_repair_messages(raw),
                 temperature=0.0,
@@ -259,7 +274,8 @@ def generate_topic_packages(
             )
             packages = normalize_llm_topic_packages(repaired, pain_signals, conversion_mode=conversion_mode)
             if packages:
-                return packages
+                return filter_topic_packages(packages, min_fit_score=min_fit_score, package_limit=package_limit)
         except Exception as exc:  # noqa: BLE001
             print(f"[WARN] LLM 选题包生成失败，使用规则版结果：{exc}")
-    return fallback_topic_packages(pain_signals, candidates, scorecards, conversion_mode=conversion_mode)
+    packages = fallback_topic_packages(pain_signals, candidates, scorecards, conversion_mode=conversion_mode)
+    return filter_topic_packages(packages, min_fit_score=min_fit_score, package_limit=package_limit)

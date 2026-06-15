@@ -91,6 +91,18 @@ python -m douyin_topic_packager run --profile-url "抖音主页分享链接" --l
 - `conservative`：更克制，不做个案判断，不主动索要敏感金额。
 - `strong`：更直接，引导用户留下阶段、障碍或决策点，但仍不允许保证结果。
 
+如果只想保留高分选题，或控制最终选题包数量，可以加筛选参数：
+
+```bash
+python -m douyin_topic_packager run \
+  --profile-url "抖音主页分享链接" \
+  --llm \
+  --min-fit-score 80 \
+  --package-limit 5
+```
+
+`--min-fit-score` 表示只保留适配分不低于该值的选题包；`--package-limit` 表示最多输出多少个选题包。两个参数也可以用于 `analyze` 子命令。
+
 也可以分步跑：
 
 ```bash

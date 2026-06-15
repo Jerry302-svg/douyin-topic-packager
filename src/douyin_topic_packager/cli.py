@@ -39,6 +39,11 @@ def _add_conversion_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_package_filter_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--min-fit-score", type=int, default=0, help="只保留适配分不低于该值的选题包，0 表示不筛选")
+    parser.add_argument("--package-limit", type=int, default=0, help="最多输出多少个选题包，0 表示不限制")
+
+
 def _print_outputs(outputs: dict) -> None:
     print("输出文件：")
     for key, value in outputs.items():
@@ -77,6 +82,7 @@ def main() -> None:
     analyze.add_argument("--output-dir", default="outputs/topic_packages", help="输出目录")
     _add_llm_args(analyze)
     _add_conversion_args(analyze)
+    _add_package_filter_args(analyze)
 
     run = subparsers.add_parser("run", help="从主页分享链接直接生成选题包")
     run.add_argument("--profile-url", required=True, help="抖音博主主页分享链接或包含链接的整段分享文本")
@@ -86,6 +92,7 @@ def main() -> None:
     run.add_argument("--max-comments-per-video", type=int, default=0, help="每条视频最多采集多少评论，0 表示不限")
     _add_llm_args(run)
     _add_conversion_args(run)
+    _add_package_filter_args(run)
 
     args = parser.parse_args()
     if args.command == "login":
@@ -130,6 +137,8 @@ def main() -> None:
             output_dir=args.output_dir,
             llm_client=_build_llm_client(args),
             conversion_mode=args.conversion_mode,
+            min_fit_score=args.min_fit_score,
+            package_limit=args.package_limit,
         )
         _print_outputs(outputs)
         return
@@ -144,6 +153,8 @@ def main() -> None:
                 max_comments_per_video=args.max_comments_per_video,
                 llm_client=_build_llm_client(args),
                 conversion_mode=args.conversion_mode,
+                min_fit_score=args.min_fit_score,
+                package_limit=args.package_limit,
             )
         )
         _print_outputs(outputs)

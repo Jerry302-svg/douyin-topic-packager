@@ -70,6 +70,8 @@ def analyze_comments_step(
     output_dir: str | Path = "outputs/topic_packages",
     llm_client: LLMClient | None = None,
     conversion_mode: str = "balanced",
+    min_fit_score: int = 0,
+    package_limit: int = 0,
 ) -> Dict[str, str]:
     videos = load_videos(videos_path)
     comments = load_comments(comments_path)
@@ -83,6 +85,8 @@ def analyze_comments_step(
         scorecards,
         llm_client=llm_client,
         conversion_mode=conversion_mode,
+        min_fit_score=min_fit_score,
+        package_limit=package_limit,
     )
 
     root = Path(output_dir)
@@ -125,6 +129,8 @@ async def run_topic_package_pipeline(
     max_comments_per_video: int = 0,
     llm_client: LLMClient | None = None,
     conversion_mode: str = "balanced",
+    min_fit_score: int = 0,
+    package_limit: int = 0,
 ) -> Dict[str, str]:
     collected = await collect_profile_step(
         profile_url,
@@ -147,5 +153,7 @@ async def run_topic_package_pipeline(
         output_dir=output_dir,
         llm_client=llm_client,
         conversion_mode=conversion_mode,
+        min_fit_score=min_fit_score,
+        package_limit=package_limit,
     )
     return {**collected, **commented, **analyzed}
