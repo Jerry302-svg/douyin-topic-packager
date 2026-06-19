@@ -21,3 +21,20 @@ def test_llm_client_accepts_direct_config():
     client = LLMClient(provider="openai", model="gpt-4o", api_key="test")
     assert client.config.provider == "openai"
     assert client.config.model == "gpt-4o"
+
+
+def test_minimax_uses_current_openai_compatible_endpoint_and_disables_thinking():
+    client = LLMClient(provider="minimax", model="MiniMax-M3", api_key="test")
+    captured = {}
+
+    def fake_post_json(url, headers, payload):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    client._post_json = fake_post_json
+
+    assert client._post_openai_compatible("minimax", [{"role": "user", "content": "hi"}], 0.1, 100) == "ok"
+    assert captured["url"] == "https://api.minimax.io/v1/chat/completions"
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
