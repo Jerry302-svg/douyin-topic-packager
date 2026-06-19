@@ -42,6 +42,7 @@ def _add_conversion_args(parser: argparse.ArgumentParser) -> None:
 def _add_package_filter_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--min-fit-score", type=int, default=0, help="只保留适配分不低于该值的选题包，0 表示不筛选")
     parser.add_argument("--package-limit", type=int, default=0, help="最多输出多少个选题包，0 表示不限制")
+    parser.add_argument("--min-evidence-count", type=int, default=0, help="只保留证据数不低于该值的痛点信号，0 表示不筛选")
 
 
 def _print_outputs(outputs: dict) -> None:
@@ -90,6 +91,7 @@ def main() -> None:
     run.add_argument("--state", default="runtime/douyin_storage_state.json", help="Cookie 路径")
     run.add_argument("--output-dir", default="outputs/topic_packages", help="输出目录")
     run.add_argument("--max-comments-per-video", type=int, default=0, help="每条视频最多采集多少评论，0 表示不限")
+    run.add_argument("--resume", action="store_true", help="优先复用输出目录中已有 profile_videos.json/comments.json")
     _add_llm_args(run)
     _add_conversion_args(run)
     _add_package_filter_args(run)
@@ -139,6 +141,7 @@ def main() -> None:
             conversion_mode=args.conversion_mode,
             min_fit_score=args.min_fit_score,
             package_limit=args.package_limit,
+            min_evidence_count=args.min_evidence_count,
         )
         _print_outputs(outputs)
         return
@@ -155,6 +158,8 @@ def main() -> None:
                 conversion_mode=args.conversion_mode,
                 min_fit_score=args.min_fit_score,
                 package_limit=args.package_limit,
+                min_evidence_count=args.min_evidence_count,
+                resume=args.resume,
             )
         )
         _print_outputs(outputs)

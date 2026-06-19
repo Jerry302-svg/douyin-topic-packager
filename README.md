@@ -97,11 +97,24 @@ python -m douyin_topic_packager run --profile-url "抖音主页分享链接" --l
 python -m douyin_topic_packager run \
   --profile-url "抖音主页分享链接" \
   --llm \
+  --min-evidence-count 2 \
   --min-fit-score 80 \
   --package-limit 5
 ```
 
-`--min-fit-score` 表示只保留适配分不低于该值的选题包；`--package-limit` 表示最多输出多少个选题包。两个参数也可以用于 `analyze` 子命令。
+`--min-evidence-count` 表示只保留证据数不低于该值的痛点信号；`--min-fit-score` 表示只保留适配分不低于该值的选题包；`--package-limit` 表示最多输出多少个选题包。这些参数也可以用于 `analyze` 子命令。
+
+如果上一次已经生成了 `profile_videos.json` 或 `comments.json`，可以断点续跑，避免重复采集主页和评论：
+
+```bash
+python -m douyin_topic_packager run \
+  --profile-url "抖音主页分享链接" \
+  --output-dir outputs/topic_packages \
+  --resume \
+  --llm
+```
+
+生成的 Markdown 报告会包含“运行摘要”，展示痛点数量、选题包数量和筛选条件。
 
 也可以分步跑：
 

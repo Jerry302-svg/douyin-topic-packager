@@ -22,6 +22,13 @@ def load_comments(path: str | Path) -> List[CommentItem]:
     return [CommentItem(**item) for item in data]
 
 
+def filter_pain_signals(pain_signals: List[PainSignal], min_evidence_count: int = 0) -> List[PainSignal]:
+    min_count = max(0, int(min_evidence_count or 0))
+    if not min_count:
+        return pain_signals
+    return [item for item in pain_signals if int(item.evidence_count or 0) >= min_count]
+
+
 async def collect_profile_step(
     profile_url: str,
     *,
@@ -72,10 +79,11 @@ def analyze_comments_step(
     conversion_mode: str = "balanced",
     min_fit_score: int = 0,
     package_limit: int = 0,
+    min_evidence_count: int = 0,
 ) -> Dict[str, str]:
     videos = load_videos(videos_path)
     comments = load_comments(comments_path)
-    pain_signals = build_pain_signals(videos, comments)
+    pain_signals = filter_pain_signals(build_pain_signals(videos, comments), min_evidence_count=min_evidence_count)
     angle_candidates = build_angle_candidates(pain_signals)
     scorecards = validate_angles(angle_candidates, pain_signals)
     packages = generate_topic_packages(
@@ -109,6 +117,9 @@ def analyze_comments_step(
         pain_signals=pain_signals,
         scorecards=scorecards,
         topic_packages=packages,
+        min_evidence_count=min_evidence_count,
+        min_fit_score=min_fit_score,
+        package_limit=package_limit,
     )
     return {
         "pain_signals": write_json([item.to_dict() for item in pain_signals], root / "pain_signals.json"),
@@ -131,19 +142,37 @@ async def run_topic_package_pipeline(
     conversion_mode: str = "balanced",
     min_fit_score: int = 0,
     package_limit: int = 0,
+    min_evidence_count: int = 0,
+    resume: bool = False,
 ) -> Dict[str, str]:
-    collected = await collect_profile_step(
-        profile_url,
-        output_dir=output_dir,
-        top_n=top_n,
-        storage_state_path=storage_state_path,
-    )
-    commented = await collect_comments_step(
-        collected["profile_videos"],
-        output_dir=output_dir,
-        storage_state_path=storage_state_path,
-        max_comments_per_video=max_comments_per_video,
-    )
+    root = Path(output_dir)
+    meta_path = root / "profile_meta.json"
+    videos_path = root / "profile_videos.json"
+    comments_path = root / "comments.json"
+    if resume and videos_path.exists():
+        meta = read_json(meta_path) if meta_path.exists() else {}
+        collected = {
+            "resolved_url": meta.get("resolved_url", ""),
+            "sec_uid": meta.get("sec_uid", ""),
+            "profile_meta": str(meta_path),
+            "profile_videos": str(videos_path),
+        }
+    else:
+        collected = await collect_profile_step(
+            profile_url,
+            output_dir=output_dir,
+            top_n=top_n,
+            storage_state_path=storage_state_path,
+        )
+    if resume and comments_path.exists():
+        commented = {"comments": str(comments_path)}
+    else:
+        commented = await collect_comments_step(
+            collected["profile_videos"],
+            output_dir=output_dir,
+            storage_state_path=storage_state_path,
+            max_comments_per_video=max_comments_per_video,
+        )
     analyzed = analyze_comments_step(
         source_url=profile_url,
         resolved_url=collected["resolved_url"],
@@ -155,5 +184,6 @@ async def run_topic_package_pipeline(
         conversion_mode=conversion_mode,
         min_fit_score=min_fit_score,
         package_limit=package_limit,
+        min_evidence_count=min_evidence_count,
     )
     return {**collected, **commented, **analyzed}
