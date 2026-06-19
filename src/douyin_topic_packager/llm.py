@@ -19,6 +19,7 @@ OPENAI_COMPATIBLE_PROVIDERS = {
     "moonshot": "https://api.moonshot.cn",
     "zhipu": "https://open.bigmodel.cn/api/paas",
     "minimax": "https://api.minimax.io",
+    "minimax-cn": "https://api.minimaxi.com",
 }
 
 NATIVE_PROVIDERS = {
@@ -165,7 +166,7 @@ class LLMClient:
             payload.pop("temperature", None)
             payload.pop("max_tokens", None)
             payload["max_completion_tokens"] = max_tokens
-        if provider == "minimax":
+        if provider in {"minimax", "minimax-cn"}:
             payload["thinking"] = {"type": "disabled"}
         data = self._post_json(
             f"{self._resolve_base_url(provider)}/v1/chat/completions",

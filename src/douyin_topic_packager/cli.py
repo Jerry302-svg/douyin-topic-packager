@@ -13,7 +13,7 @@ from .pipeline import analyze_comments_step, collect_comments_step, collect_prof
 
 def _add_llm_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--llm", action="store_true", help="使用用户配置的 LLM 生成更专业的选题包")
-    parser.add_argument("--llm-provider", default="", help="LLM Provider，例如 openai/deepseek/qwen/kimi/zhipu/minimax/anthropic/gemini/openai-compatible")
+    parser.add_argument("--llm-provider", default="", help="LLM Provider，例如 openai/deepseek/qwen/kimi/zhipu/minimax/minimax-cn/anthropic/gemini/openai-compatible")
     parser.add_argument("--llm-model", default="", help="模型名称，由用户按自己的账号填写")
     parser.add_argument("--llm-api-key", default="", help="API Key；推荐写入 .env 的 LLM_API_KEY")
     parser.add_argument("--llm-base-url", default="", help="自定义 API 地址；openai-compatible 或私有网关需要填写")

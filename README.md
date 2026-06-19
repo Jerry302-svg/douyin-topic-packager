@@ -51,9 +51,12 @@ LLM_BASE_URL=
 - `kimi` / `moonshot`
 - `zhipu`
 - `minimax`
+- `minimax-cn`（MiniMax 国内区订阅 Key 推荐）
 - `anthropic`
 - `gemini`
 - `openai-compatible`
+
+MiniMax 说明：`minimax` 使用全球端点 `https://api.minimax.io`；如果你的 Key 是国内区订阅 Key，请使用 `LLM_PROVIDER=minimax-cn`，模型可填 `MiniMax-M3`。
 
 ## 使用方法
 
