@@ -78,6 +78,29 @@ def test_markdown_report_is_clean_result():
     assert "```json" not in md
 
 
+def test_markdown_report_prioritizes_packages_and_shortens_links():
+    videos, comments = _sample_data()
+    videos[0].url = "https://www.iesdouyin.com/share/video/100/?very=long&query=value"
+    signals = build_pain_signals(videos, comments)
+    candidates = build_angle_candidates(signals)
+    scorecards = validate_angles(candidates, signals)
+    packages = fallback_topic_packages(signals, candidates, scorecards)
+
+    md = render_topic_packages_markdown(
+        source_url="https://v.douyin.com/test/",
+        resolved_url="https://www.douyin.com/user/test",
+        sec_uid="test",
+        videos=videos,
+        pain_signals=signals,
+        scorecards=scorecards,
+        topic_packages=packages,
+    )
+
+    assert md.index("## 一、可直接使用的选题包") < md.index("## 二、Top 视频信号")
+    assert "- 链接：[打开视频](" in md
+    assert "- 链接：https://www.iesdouyin.com" not in md
+
+
 def test_generate_topic_packages_repairs_invalid_llm_json_once():
     class FakeLLM:
         def __init__(self):

@@ -22,8 +22,8 @@ def render_topic_packages_markdown(
     lines: List[str] = [
         "# 抖音对标账号选题包",
         "",
-        f"- 原始链接：{source_url}",
-        f"- 解析链接：{resolved_url}",
+        f"- 原始链接：{_link('打开原始链接', source_url)}",
+        f"- 解析链接：{_link('打开解析页', resolved_url)}",
         f"- sec_uid：{sec_uid}",
         f"- 视频样本：Top {len(videos)}，按评论数排序",
         "",
@@ -36,9 +36,12 @@ def render_topic_packages_markdown(
         f"- 最小适配分：{max(0, int(min_fit_score or 0))}",
         f"- 选题包数量上限：{max(0, int(package_limit or 0)) or '不限制'}",
         "",
-        "## 一、Top 视频信号",
+        "## 一、可直接使用的选题包",
         "",
     ]
+    _append_topic_packages(lines, topic_packages)
+
+    lines.extend(["## 二、Top 视频信号", ""])
     for index, video in enumerate(videos, 1):
         lines.extend(
             [
@@ -47,12 +50,12 @@ def render_topic_packages_markdown(
                 f"- 评论数：{video.comment_count}",
                 f"- 点赞数：{video.like_count}",
                 f"- 分享数：{video.share_count}",
-                f"- 链接：{video.url}",
+                f"- 链接：{_link('打开视频', video.url)}",
                 "",
             ]
         )
 
-    lines.extend(["## 二、评论痛点信号", ""])
+    lines.extend(["## 三、评论痛点信号", ""])
     if not pain_signals:
         lines.extend(["暂无足够评论信号。", ""])
     for index, signal in enumerate(pain_signals, 1):
@@ -70,7 +73,7 @@ def render_topic_packages_markdown(
             lines.append(f"  - {evidence}")
         lines.append("")
 
-    lines.extend(["## 三、角度验证评分", ""])
+    lines.extend(["## 四、角度验证评分", ""])
     for index, scorecard in enumerate(scorecards, 1):
         score_text = "，".join(f"{key}: {value}" for key, value in scorecard.scores.items())
         lines.extend(
@@ -85,9 +88,13 @@ def render_topic_packages_markdown(
             ]
         )
 
-    lines.extend(["## 四、可直接使用的选题包", ""])
+    return "\n".join(lines).strip() + "\n"
+
+
+def _append_topic_packages(lines: List[str], topic_packages: List[TopicPackage]) -> None:
     if not topic_packages:
         lines.extend(["没有生成可用选题包。", ""])
+        return
     for index, package in enumerate(topic_packages, 1):
         lines.extend(
             [
@@ -115,11 +122,16 @@ def render_topic_packages_markdown(
             lines.append(f"  - {suggestion}")
         lines.append("")
 
-    return "\n".join(lines).strip() + "\n"
-
 
 def write_markdown_report(content: str, path: str | Path) -> str:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return str(target)
+
+
+def _link(label: str, url: str) -> str:
+    value = (url or "").strip()
+    if not value:
+        return "未提供"
+    return f"[{label}]({value})"
