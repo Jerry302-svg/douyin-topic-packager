@@ -36,9 +36,15 @@ def render_topic_packages_markdown(
         f"- 最小适配分：{max(0, int(min_fit_score or 0))}",
         f"- 选题包数量上限：{max(0, int(package_limit or 0)) or '不限制'}",
         "",
-        "## 一、可直接使用的选题包",
+        "## 推荐拍摄顺序",
         "",
     ]
+    _append_shooting_order(lines, topic_packages)
+
+    lines.extend([
+        "## 一、可直接使用的选题包",
+        "",
+    ])
     _append_topic_packages(lines, topic_packages)
 
     lines.extend(["## 二、Top 视频信号", ""])
@@ -123,6 +129,16 @@ def _append_topic_packages(lines: List[str], topic_packages: List[TopicPackage])
         lines.append("")
 
 
+def _append_shooting_order(lines: List[str], topic_packages: List[TopicPackage]) -> None:
+    if not topic_packages:
+        lines.extend(["暂无可排序选题。", ""])
+        return
+    for index, package in enumerate(topic_packages[:5], 1):
+        hook = _short_text(package.opening_hook or package.recommended_angle or package.topic, limit=70)
+        lines.append(f"- {index}. **{package.brief_title}**（适配分：{package.fit_score}）：{hook}")
+    lines.append("")
+
+
 def write_markdown_report(content: str, path: str | Path) -> str:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -135,3 +151,10 @@ def _link(label: str, url: str) -> str:
     if not value:
         return "未提供"
     return f"[{label}]({value})"
+
+
+def _short_text(value: str, limit: int = 70) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."

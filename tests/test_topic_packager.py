@@ -73,6 +73,7 @@ def test_markdown_report_is_clean_result():
     )
 
     assert "# 抖音对标账号选题包" in md
+    assert "## 推荐拍摄顺序" in md
     assert "可直接使用的选题包" in md
     assert "<think>" not in md
     assert "```json" not in md
@@ -96,6 +97,8 @@ def test_markdown_report_prioritizes_packages_and_shortens_links():
         topic_packages=packages,
     )
 
+    assert md.index("## 推荐拍摄顺序") < md.index("## 一、可直接使用的选题包")
+    assert packages[0].brief_title in md.split("## 一、可直接使用的选题包", 1)[0]
     assert md.index("## 一、可直接使用的选题包") < md.index("## 二、Top 视频信号")
     assert "- 链接：[打开视频](" in md
     assert "- 链接：https://www.iesdouyin.com" not in md
