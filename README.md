@@ -18,6 +18,8 @@ Cookie 登录/导入
 
 本项目不内置任何 LLM API Key。你需要自己选择模型供应商，并在 `.env` 里填写 Key。
 
+报告会把高可信痛点和弱证据观察分开展示，并为每个选题包生成封面文案、前三秒口播、拍摄结构、评论引导和素材准备，方便直接进入拍摄执行。
+
 ## 环境要求
 
 - Python 3.10+
@@ -31,6 +33,14 @@ pip install -e .
 python -m playwright install chromium
 cp .env.example .env
 ```
+
+如果不确定环境是否准备好，可以先运行：
+
+```bash
+python -m douyin_topic_packager doctor
+```
+
+它会检查 Python 版本、Playwright、Cookie 文件和 LLM 配置完整性。LLM 只有使用 `--llm` 时才必须配置。
 
 ## 配置 LLM
 
@@ -117,7 +127,9 @@ python -m douyin_topic_packager run \
   --llm
 ```
 
-生成的 Markdown 报告会包含“运行摘要”，展示痛点数量、选题包数量和筛选条件。
+`--resume` 会校验关键参数。比如本次 `--top-n` 或 `--max-comments-per-video` 和上次不同，工具不会盲目复用旧文件，而是重新采集对应阶段。每次运行会写入 `run_manifest.json`，记录参数、参数 hash、复用情况和结果数量。
+
+生成的 Markdown 报告会包含“运行摘要”，展示痛点数量、高可信痛点数量、弱证据观察数量、选题包数量和筛选条件。
 
 也可以分步跑：
 
@@ -138,6 +150,7 @@ pain_signals.json
 angle_candidates.json
 validation_scorecards.json
 topic_packages.json
+run_manifest.json
 topic_packages.md
 ```
 

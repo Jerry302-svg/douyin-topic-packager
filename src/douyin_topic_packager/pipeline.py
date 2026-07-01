@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from .collector import collect_comments_for_videos, collect_profile_videos
 from .io_utils import read_json, write_json
@@ -27,6 +30,74 @@ def filter_pain_signals(pain_signals: List[PainSignal], min_evidence_count: int 
     if not min_count:
         return pain_signals
     return [item for item in pain_signals if int(item.evidence_count or 0) >= min_count]
+
+
+def _run_parameters(
+    *,
+    top_n: int,
+    max_comments_per_video: int,
+    conversion_mode: str,
+    min_fit_score: int,
+    package_limit: int,
+    min_evidence_count: int,
+) -> Dict[str, Any]:
+    return {
+        "top_n": int(top_n or 0),
+        "max_comments_per_video": int(max_comments_per_video or 0),
+        "conversion_mode": conversion_mode,
+        "min_fit_score": int(min_fit_score or 0),
+        "package_limit": int(package_limit or 0),
+        "min_evidence_count": int(min_evidence_count or 0),
+    }
+
+
+def _parameter_hash(parameters: Dict[str, Any]) -> str:
+    payload = json.dumps(parameters, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _profile_resume_matches(meta: Dict[str, Any], top_n: int) -> bool:
+    if not meta:
+        return True
+    return int(meta.get("top_n") or 0) == int(top_n or 0)
+
+
+def _comments_resume_matches(root: Path, parameters: Dict[str, Any]) -> bool:
+    manifest_path = root / "run_manifest.json"
+    if not manifest_path.exists():
+        return int(parameters.get("max_comments_per_video") or 0) == 0
+    manifest = read_json(manifest_path)
+    previous = manifest.get("parameters") or {}
+    return (
+        int(previous.get("top_n") or 0) == int(parameters.get("top_n") or 0)
+        and int(previous.get("max_comments_per_video") or 0) == int(parameters.get("max_comments_per_video") or 0)
+    )
+
+
+def write_run_manifest(
+    *,
+    output_dir: str | Path,
+    parameters: Dict[str, Any],
+    files: Dict[str, str],
+    counts: Dict[str, int],
+    resume: bool,
+    reused_profile: bool,
+    reused_comments: bool,
+) -> str:
+    target = Path(output_dir) / "run_manifest.json"
+    payload = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "parameters": parameters,
+        "parameter_hash": _parameter_hash(parameters),
+        "resume": {
+            "requested": bool(resume),
+            "reused_profile": bool(reused_profile),
+            "reused_comments": bool(reused_comments),
+        },
+        "counts": counts,
+        "files": files,
+    }
+    return write_json(payload, target)
 
 
 async def collect_profile_step(
@@ -149,14 +220,25 @@ async def run_topic_package_pipeline(
     meta_path = root / "profile_meta.json"
     videos_path = root / "profile_videos.json"
     comments_path = root / "comments.json"
-    if resume and videos_path.exists():
-        meta = read_json(meta_path) if meta_path.exists() else {}
+    parameters = _run_parameters(
+        top_n=top_n,
+        max_comments_per_video=max_comments_per_video,
+        conversion_mode=conversion_mode,
+        min_fit_score=min_fit_score,
+        package_limit=package_limit,
+        min_evidence_count=min_evidence_count,
+    )
+    meta = read_json(meta_path) if meta_path.exists() else {}
+    reused_profile = False
+    reused_comments = False
+    if resume and videos_path.exists() and _profile_resume_matches(meta, top_n):
         collected = {
             "resolved_url": meta.get("resolved_url", ""),
             "sec_uid": meta.get("sec_uid", ""),
             "profile_meta": str(meta_path),
             "profile_videos": str(videos_path),
         }
+        reused_profile = True
     else:
         collected = await collect_profile_step(
             profile_url,
@@ -164,8 +246,9 @@ async def run_topic_package_pipeline(
             top_n=top_n,
             storage_state_path=storage_state_path,
         )
-    if resume and comments_path.exists():
+    if resume and reused_profile and comments_path.exists() and _comments_resume_matches(root, parameters):
         commented = {"comments": str(comments_path)}
+        reused_comments = True
     else:
         commented = await collect_comments_step(
             collected["profile_videos"],
@@ -186,4 +269,18 @@ async def run_topic_package_pipeline(
         package_limit=package_limit,
         min_evidence_count=min_evidence_count,
     )
-    return {**collected, **commented, **analyzed}
+    manifest = write_run_manifest(
+        output_dir=output_dir,
+        parameters=parameters,
+        files={**collected, **commented, **analyzed},
+        counts={
+            "videos": len(load_videos(collected["profile_videos"])),
+            "comments": len(load_comments(commented["comments"])),
+            "pain_signals": len(read_json(analyzed["pain_signals"])),
+            "topic_packages": len(read_json(analyzed["topic_packages"])),
+        },
+        resume=resume,
+        reused_profile=reused_profile,
+        reused_comments=reused_comments,
+    )
+    return {**collected, **commented, **analyzed, "run_manifest": manifest}

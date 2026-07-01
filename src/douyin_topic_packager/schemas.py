@@ -45,6 +45,7 @@ class PainSignal:
     source_titles: List[str] = field(default_factory=list)
     signal_strength: int = 60
     confidence: float = 0.6
+    evidence_level: str = "medium"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -91,6 +92,11 @@ class TopicPackage:
     production_suggestions: List[str]
     fit_score: int
     why_worth_shooting: str = ""
+    cover_copy: str = ""
+    first_three_seconds: str = ""
+    script_outline: List[str] = field(default_factory=list)
+    comment_cta: str = ""
+    material_notes: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:

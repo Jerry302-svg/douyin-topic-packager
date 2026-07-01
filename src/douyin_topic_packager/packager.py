@@ -67,6 +67,37 @@ def _fallback_cta(pain_point: str, conversion_mode: str) -> str:
     return f"评论区留下你卡住的具体场景、已经试过的方法和最想解决的一步，后续内容继续拆「{pain}」应该先从哪里切。"
 
 
+def _cover_copy(title: str, pain_point: str) -> str:
+    pain = _text(pain_point)[:18] or "先判断这一步"
+    title_text = _text(title)[:20]
+    return title_text or f"{pain}，先别急"
+
+
+def _first_three_seconds(pain_point: str, opening_hook: str) -> str:
+    if _text(opening_hook):
+        return _text(opening_hook)
+    pain = _text(pain_point)[:24] or "这个问题"
+    return f"如果你也卡在「{pain}」，先别急着照搬方法。"
+
+
+def _script_outline(pain_point: str, angle: str) -> List[str]:
+    pain = _text(pain_point)[:22] or "用户痛点"
+    angle_text = _text(angle)[:28] or "给一个可执行判断"
+    return [
+        f"开头点破痛点：{pain}",
+        f"中段拆判断：{angle_text}",
+        "结尾给动作：让用户留下具体阶段或场景",
+    ]
+
+
+def _material_notes(evidence: Iterable[Any]) -> List[str]:
+    notes = ["准备一条真实评论或标题截图作为开头证据"]
+    first = next((_text(item) for item in evidence if _text(item)), "")
+    if first:
+        notes.append(f"可引用证据：{first[:42]}")
+    return notes
+
+
 def build_topic_package_messages(
     videos: List[VideoItem],
     pain_signals: List[PainSignal],
@@ -109,7 +140,8 @@ def build_topic_package_messages(
         "请生成 3-8 个 topic_packages。每个对象必须包含："
         "brief_title, topic, pain_point, evidence, target_audience, opening_hook, "
         "recommended_angle, proof_needed, cta_direction, risk_notes, production_suggestions, "
-        "fit_score, why_worth_shooting。\n\n"
+        "fit_score, why_worth_shooting, cover_copy, first_three_seconds, script_outline, "
+        "comment_cta, material_notes。\n\n"
         "质量要求：\n"
         "1. brief_title 要像用户能点击选择的选题标题。\n"
         "2. pain_point 必须来自输入信号，不得凭空创造行业和身份。\n"
@@ -117,7 +149,9 @@ def build_topic_package_messages(
         "4. opening_hook 要像口播第一句话，具体、有代入感。\n"
         "5. recommended_angle 要说明这条视频怎么讲，不要复述痛点。\n"
         "6. CTA 要贴合痛点，不能固定写“评论行业”。\n"
-        "7. 风险提醒适度即可，不要把表达全部压死。\n\n"
+        "7. cover_copy 要像封面短句；first_three_seconds 要能直接口播。\n"
+        "8. script_outline 给 3-5 段拍摄结构；material_notes 写素材准备。\n"
+        "9. 风险提醒适度即可，不要把表达全部压死。\n\n"
         f"输入数据：\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
@@ -185,21 +219,38 @@ def normalize_llm_topic_packages(
         suggestions = item.get("production_suggestions") or ["适合口播", "用真实评论或具体场景开头"]
         if isinstance(suggestions, str):
             suggestions = [suggestions]
+        comment_cta = _text(item.get("comment_cta") or item.get("cta_direction") or _fallback_cta(pain, conversion_mode))
+        evidence_clean = [_text(value) for value in evidence if _text(value)][:8]
         normalized.append(
             TopicPackage(
                 brief_title=title[:80],
                 topic=_text(item.get("topic") or angle or title),
                 pain_point=pain,
-                evidence=[_text(value) for value in evidence if _text(value)][:8],
+                evidence=evidence_clean,
                 target_audience=_text(item.get("target_audience") or "当前选题对应的目标用户"),
                 opening_hook=_text(item.get("opening_hook") or f"如果你也卡在“{pain[:24]}”，先别急着找万能答案。"),
                 recommended_angle=angle,
                 proof_needed=_text(item.get("proof_needed") or "补一个真实场景、常见误区或前后对比。"),
-                cta_direction=_text(item.get("cta_direction") or f"评论区留下你卡住的具体场景，我帮你判断“{pain[:24]}”先从哪里切。"),
+                cta_direction=_text(item.get("cta_direction") or comment_cta),
                 risk_notes=[_text(value) for value in risk_notes if _text(value)][:6],
                 production_suggestions=[_text(value) for value in suggestions if _text(value)][:6],
                 fit_score=_fit_score(item.get("fit_score")),
                 why_worth_shooting=_text(item.get("why_worth_shooting") or item.get("why_it_matters") or ""),
+                cover_copy=_text(item.get("cover_copy") or _cover_copy(title, pain)),
+                first_three_seconds=_first_three_seconds(pain, _text(item.get("first_three_seconds") or item.get("opening_hook") or "")),
+                script_outline=[
+                    _text(value)
+                    for value in (item.get("script_outline") if isinstance(item.get("script_outline"), list) else [])
+                    if _text(value)
+                ]
+                or _script_outline(pain, angle),
+                comment_cta=comment_cta,
+                material_notes=[
+                    _text(value)
+                    for value in (item.get("material_notes") if isinstance(item.get("material_notes"), list) else [])
+                    if _text(value)
+                ]
+                or _material_notes(evidence_clean),
                 metadata={"generated_by": "llm", "conversion_mode": conversion_mode, "llm_raw": item},
             )
         )
@@ -238,6 +289,11 @@ def fallback_topic_packages(
                 production_suggestions=["适合口播", "不需要复杂场景", "用评论痛点开头", "适合 60-90 秒"],
                 fit_score=int(score.total_score if score else signal.signal_strength),
                 why_worth_shooting=f"评论和标题里已经出现相关信号，证据数 {signal.evidence_count}，适合做成可直接回应用户疑问的内容。",
+                cover_copy=_cover_copy(candidate.angle, candidate.pain_point),
+                first_three_seconds=_first_three_seconds(candidate.pain_point, candidate.opening_hook),
+                script_outline=_script_outline(candidate.pain_point, candidate.angle),
+                comment_cta=_fallback_cta(candidate.pain_point, conversion_mode),
+                material_notes=_material_notes(signal.evidence),
                 metadata={"generated_by": "fallback_rules", "conversion_mode": conversion_mode},
             )
         )

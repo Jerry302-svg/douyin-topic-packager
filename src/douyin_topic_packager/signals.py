@@ -33,6 +33,21 @@ def _label_from_text(value: str, fallback_keywords: List[str] | None = None, max
     return text
 
 
+def _cluster_label_from_comment(text: str, keywords: List[str]) -> str:
+    clean = _clean_text(text)
+    if "第一步" in clean and any(word in clean for word in ["不知道", "怎么", "怎么办", "怕"]):
+        return "不知道第一步怎么做"
+    if "违约金" in clean:
+        return "担心违约金风险"
+    if any(word in clean for word in ["被骗", "骗入职", "套路"]):
+        return "担心被套路或被骗"
+    if "能不能签" in clean or ("签" in clean and "能不能" in clean):
+        return "担心合同或公会能不能签"
+    if any(word in clean for word in ["没效果", "没用", "白忙"]):
+        return "担心照做以后没有效果"
+    return _label_from_text(clean, keywords)
+
+
 def _keywords(text: str, limit: int = 8) -> List[str]:
     tokens = re.findall(r"[\u4e00-\u9fff]{2,8}|[A-Za-z0-9_]{3,}", text)
     cleaned = [token for token in tokens if token not in STOP_WORDS and len(token) >= 2]
@@ -48,6 +63,14 @@ def _question_or_pain_score(text: str) -> int:
     if any(word in text for word in ["想问", "咨询", "求助", "请问", "有人知道", "有没有"]):
         score += 15
     return score
+
+
+def _evidence_level(evidence_count: int, confidence: float) -> str:
+    if evidence_count >= 2 or confidence >= 0.68:
+        return "strong"
+    if evidence_count <= 1 and confidence < 0.6:
+        return "weak"
+    return "medium"
 
 
 def build_pain_signals(videos: List[VideoItem], comments: List[CommentItem], limit: int = 12) -> List[PainSignal]:
@@ -100,7 +123,7 @@ def build_pain_signals(videos: List[VideoItem], comments: List[CommentItem], lim
             continue
         if score <= 0 and len(text) < 8:
             continue
-        label = _label_from_text(text, kws)
+        label = _cluster_label_from_comment(text, kws)
         add_signal(label, text[:180], video, max(8, score))
 
     signals: List[PainSignal] = []
@@ -118,6 +141,7 @@ def build_pain_signals(videos: List[VideoItem], comments: List[CommentItem], lim
                 source_titles=sorted(bucket["titles"])[:5],
                 signal_strength=strength,
                 confidence=confidence,
+                evidence_level=_evidence_level(evidence_count, confidence),
             )
         )
     signals.sort(key=lambda item: (item.signal_strength, item.evidence_count), reverse=True)

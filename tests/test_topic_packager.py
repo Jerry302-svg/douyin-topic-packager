@@ -5,7 +5,7 @@ from douyin_topic_packager.packager import (
     generate_topic_packages,
 )
 from douyin_topic_packager.reports import render_topic_packages_markdown
-from douyin_topic_packager.schemas import CommentItem, TopicPackage, VideoItem
+from douyin_topic_packager.schemas import CommentItem, PainSignal, TopicPackage, VideoItem
 from douyin_topic_packager.signals import build_angle_candidates, build_pain_signals, validate_angles
 
 
@@ -56,6 +56,20 @@ def test_build_topic_package_chain_without_llm():
     assert packages[0].evidence
 
 
+def test_build_pain_signals_clusters_similar_user_questions():
+    comments = [
+        CommentItem(aweme_id="100", text="我不知道第一步应该怎么做，有没有简单办法？", like_count=8),
+        CommentItem(aweme_id="100", text="第一步不知道怎么做，怕试了还是没效果", like_count=5),
+    ]
+
+    signals = build_pain_signals([], comments)
+
+    assert signals
+    assert signals[0].evidence_count == 2
+    assert "第一步" in signals[0].pain_point
+    assert signals[0].evidence_level == "strong"
+
+
 def test_markdown_report_is_clean_result():
     videos, comments = _sample_data()
     signals = build_pain_signals(videos, comments)
@@ -102,6 +116,48 @@ def test_markdown_report_prioritizes_packages_and_shortens_links():
     assert md.index("## 一、可直接使用的选题包") < md.index("## 二、Top 视频信号")
     assert "- 链接：[打开视频](" in md
     assert "- 链接：https://www.iesdouyin.com" not in md
+
+
+def test_markdown_report_downgrades_weak_signals_and_adds_shooting_brief():
+    videos, comments = _sample_data()
+    strong_signal = PainSignal(
+        pain_point="不知道第一步怎么做",
+        evidence=["我不知道第一步怎么做", "第一步怕做错"],
+        evidence_count=2,
+        signal_strength=82,
+        confidence=0.72,
+        evidence_level="strong",
+    )
+    weak_signal = PainSignal(
+        pain_point="单条评论里的偶发问题",
+        evidence=["路过问一句"],
+        evidence_count=1,
+        signal_strength=48,
+        confidence=0.48,
+        evidence_level="weak",
+    )
+    package = _topic_package("第一步判断清单", 88)
+    package.cover_copy = "先别急着做决定"
+    package.first_three_seconds = "如果你不知道第一步怎么做，先看这三个判断。"
+    package.script_outline = ["误区", "判断", "动作"]
+    package.comment_cta = "评论区留下你卡在哪一步。"
+    package.material_notes = ["准备一条真实评论"]
+
+    md = render_topic_packages_markdown(
+        source_url="https://v.douyin.com/test/",
+        resolved_url="https://www.douyin.com/user/test",
+        sec_uid="test",
+        videos=videos,
+        pain_signals=[strong_signal, weak_signal],
+        scorecards=[],
+        topic_packages=[package],
+    )
+
+    assert "拍摄简案" in md
+    assert "封面文案：先别急着做决定" in md
+    assert "弱证据观察" in md
+    assert "单条评论里的偶发问题" in md
+    assert md.index("不知道第一步怎么做") < md.index("## 四、弱证据观察")
 
 
 def test_generate_topic_packages_repairs_invalid_llm_json_once():
@@ -152,6 +208,8 @@ def test_generate_topic_packages_marks_conversion_mode():
 
     assert packages[0].metadata["generated_by"] == "llm"
     assert packages[0].metadata["conversion_mode"] == "strong"
+    assert packages[0].cover_copy
+    assert packages[0].first_three_seconds
 
 
 def test_filter_topic_packages_applies_min_score_and_limit():

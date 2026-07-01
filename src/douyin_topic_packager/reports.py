@@ -19,6 +19,8 @@ def render_topic_packages_markdown(
     min_fit_score: int = 0,
     package_limit: int = 0,
 ) -> str:
+    actionable_signals = [item for item in pain_signals if getattr(item, "evidence_level", "medium") != "weak"]
+    weak_signals = [item for item in pain_signals if getattr(item, "evidence_level", "medium") == "weak"]
     lines: List[str] = [
         "# 抖音对标账号选题包",
         "",
@@ -30,6 +32,8 @@ def render_topic_packages_markdown(
         "## 运行摘要",
         "",
         f"- 痛点信号：{len(pain_signals)} 个",
+        f"- 高可信痛点：{len(actionable_signals)} 个",
+        f"- 弱证据观察：{len(weak_signals)} 个",
         f"- 角度评分：{len(scorecards)} 个",
         f"- 选题包：{len(topic_packages)} 个",
         f"- 最小证据数：{max(0, int(min_evidence_count or 0))}",
@@ -62,24 +66,18 @@ def render_topic_packages_markdown(
         )
 
     lines.extend(["## 三、评论痛点信号", ""])
-    if not pain_signals:
+    if not actionable_signals:
         lines.extend(["暂无足够评论信号。", ""])
-    for index, signal in enumerate(pain_signals, 1):
-        lines.extend(
-            [
-                f"### {index}. {signal.pain_point}",
-                "",
-                f"- 证据数：{signal.evidence_count}",
-                f"- 信号强度：{signal.signal_strength}",
-                f"- 置信度：{signal.confidence}",
-                "- 代表证据：",
-            ]
-        )
-        for evidence in signal.evidence[:5]:
-            lines.append(f"  - {evidence}")
-        lines.append("")
+    _append_pain_signals(lines, actionable_signals)
 
-    lines.extend(["## 四、角度验证评分", ""])
+    if weak_signals:
+        lines.extend(["## 四、弱证据观察", ""])
+        lines.append("这些信号证据较少，适合当作灵感观察，不建议直接作为优先拍摄选题。")
+        lines.append("")
+        _append_pain_signals(lines, weak_signals)
+
+    scorecard_section_number = "五" if weak_signals else "四"
+    lines.extend([f"## {scorecard_section_number}、角度验证评分", ""])
     for index, scorecard in enumerate(scorecards, 1):
         score_text = "，".join(f"{key}: {value}" for key, value in scorecard.scores.items())
         lines.extend(
@@ -115,6 +113,18 @@ def _append_topic_packages(lines: List[str], topic_packages: List[TopicPackage])
                 f"- 需要补的证明：{package.proof_needed}",
                 f"- CTA 方向：{package.cta_direction}",
                 f"- 为什么值得拍：{package.why_worth_shooting or '来自评论、标题或账号内容中的真实信号。'}",
+                "- 拍摄简案：",
+                f"  - 封面文案：{package.cover_copy or _short_text(package.brief_title, limit=24)}",
+                f"  - 前3秒：{package.first_three_seconds or package.opening_hook}",
+                f"  - 评论引导：{package.comment_cta or package.cta_direction}",
+            ]
+        )
+        for outline in (package.script_outline or [])[:5]:
+            lines.append(f"  - 结构：{outline}")
+        for note in (package.material_notes or [])[:4]:
+            lines.append(f"  - 素材：{note}")
+        lines.extend(
+            [
                 "- 证据：",
             ]
         )
@@ -126,6 +136,24 @@ def _append_topic_packages(lines: List[str], topic_packages: List[TopicPackage])
         lines.append("- 拍摄建议：")
         for suggestion in package.production_suggestions[:6]:
             lines.append(f"  - {suggestion}")
+        lines.append("")
+
+
+def _append_pain_signals(lines: List[str], pain_signals: List[PainSignal]) -> None:
+    for index, signal in enumerate(pain_signals, 1):
+        lines.extend(
+            [
+                f"### {index}. {signal.pain_point}",
+                "",
+                f"- 证据等级：{getattr(signal, 'evidence_level', 'medium')}",
+                f"- 证据数：{signal.evidence_count}",
+                f"- 信号强度：{signal.signal_strength}",
+                f"- 置信度：{signal.confidence}",
+                "- 代表证据：",
+            ]
+        )
+        for evidence in signal.evidence[:5]:
+            lines.append(f"  - {evidence}")
         lines.append("")
 
 
