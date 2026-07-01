@@ -112,6 +112,8 @@ async def collect_profile_step(
         top_n=top_n,
         storage_state_path=storage_state_path,
     )
+    if not videos:
+        raise RuntimeError("未采集到视频，请检查 Cookie 是否过期、主页链接是否正确，或稍后重试")
     root = Path(output_dir)
     meta = {"source_url": profile_url, "resolved_url": resolved_url, "sec_uid": sec_uid, "top_n": top_n}
     return {
@@ -246,6 +248,8 @@ async def run_topic_package_pipeline(
             top_n=top_n,
             storage_state_path=storage_state_path,
         )
+    if not load_videos(collected["profile_videos"]):
+        raise RuntimeError("未采集到视频，请检查 Cookie 是否过期、主页链接是否正确，或稍后重试")
     if resume and reused_profile and comments_path.exists() and _comments_resume_matches(root, parameters):
         commented = {"comments": str(comments_path)}
         reused_comments = True

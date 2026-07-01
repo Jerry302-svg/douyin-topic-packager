@@ -167,3 +167,43 @@ def test_run_topic_package_pipeline_resume_recollects_when_parameters_change(tmp
     assert outputs["sec_uid"] == "new_sec_uid"
     assert run_manifest["parameters"]["top_n"] == 5
     assert run_manifest["parameters"]["max_comments_per_video"] == 9
+
+
+def test_run_topic_package_pipeline_fails_when_profile_collection_is_empty(tmp_path, monkeypatch):
+    root = Path(tmp_path)
+
+    async def fake_collect(profile_url, *, output_dir, top_n, storage_state_path):
+        (root / "profile_meta.json").write_text(
+            json.dumps(
+                {
+                    "source_url": profile_url,
+                    "resolved_url": "https://www.douyin.com/user/empty",
+                    "sec_uid": "empty_sec_uid",
+                    "top_n": top_n,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (root / "profile_videos.json").write_text("[]", encoding="utf-8")
+        return {
+            "resolved_url": "https://www.douyin.com/user/empty",
+            "sec_uid": "empty_sec_uid",
+            "profile_meta": str(root / "profile_meta.json"),
+            "profile_videos": str(root / "profile_videos.json"),
+        }
+
+    async def forbidden_comments(*args, **kwargs):
+        raise AssertionError("empty profile should stop before comment collection")
+
+    monkeypatch.setattr(pipeline, "collect_profile_step", fake_collect)
+    monkeypatch.setattr(pipeline, "collect_comments_step", forbidden_comments)
+
+    with pytest.raises(RuntimeError, match="未采集到视频"):
+        asyncio.run(
+            pipeline.run_topic_package_pipeline(
+                profile_url="https://v.douyin.com/example/",
+                output_dir=root,
+                top_n=8,
+            )
+        )
