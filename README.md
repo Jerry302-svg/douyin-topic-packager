@@ -34,6 +34,12 @@ python -m playwright install chromium
 cp .env.example .env
 ```
 
+查看当前工具版本：
+
+```bash
+python -m douyin_topic_packager --version
+```
+
 如果不确定环境是否准备好，可以先运行：
 
 ```bash

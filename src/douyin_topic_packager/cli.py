@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from pathlib import Path
 
+from . import __version__
 from .cookies import save_douyin_login_state
 from .diagnostics import diagnostics_has_errors, format_diagnostics, run_diagnostics
 from .io_utils import read_json
@@ -55,6 +56,7 @@ def _print_outputs(outputs: dict) -> None:
 def main() -> None:
     load_dotenv()
     parser = argparse.ArgumentParser(prog="douyin-topic-packager", description="抖音对标账号选题包生成工具")
+    parser.add_argument("--version", action="version", version=f"douyin-topic-packager {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     doctor = subparsers.add_parser("doctor", help="检查本机运行环境和常见配置")
