@@ -22,6 +22,7 @@ def evaluate_topic_run(
     *,
     pain_signals: Iterable[Dict[str, Any]],
     topic_packages: Iterable[Dict[str, Any]],
+    required_generator: str = "",
 ) -> Dict[str, Any]:
     signals = [item for item in pain_signals if isinstance(item, dict)]
     packages = [item for item in topic_packages if isinstance(item, dict)]
@@ -33,6 +34,7 @@ def evaluate_topic_run(
     unknown_pain_count = 0
     long_title_count = 0
     generic_audience_count = 0
+    generator_counts: Dict[str, int] = {}
     for package in packages:
         pain = str(package.get("pain_point") or "")
         if pain not in known_pains:
@@ -44,6 +46,8 @@ def evaluate_topic_run(
         evidence_grounded += sum(1 for item in evidence if _normalized_text(item) in ref_texts)
         long_title_count += int(len(_normalized_text(package.get("brief_title"))) > 36)
         generic_audience_count += int(_normalized_text(package.get("target_audience")) in GENERIC_AUDIENCES)
+        generator = _normalized_text((package.get("metadata") or {}).get("generated_by")) or "unknown"
+        generator_counts[generator] = generator_counts.get(generator, 0) + 1
         searchable = " ".join(
             str(package.get(key) or "")
             for key in ("proof_needed", "cta_direction", "comment_cta", "production_suggestions")
@@ -57,6 +61,8 @@ def evaluate_topic_run(
         "no_unsafe_instructions": unsafe_count == 0,
         "titles_are_concise": long_title_count == 0,
         "audiences_are_specific": generic_audience_count == 0,
+        "required_generator_used": not required_generator
+        or generator_counts.get(required_generator, 0) == len(packages),
         "packages_generated": bool(packages),
     }
     return {
@@ -68,6 +74,8 @@ def evaluate_topic_run(
             "unsafe_instruction_count": unsafe_count,
             "long_title_count": long_title_count,
             "generic_audience_count": generic_audience_count,
+            "generator_counts": generator_counts,
+            "required_generator": required_generator,
             "package_count": len(packages),
             "publish_ready_count": len(
                 [item for item in packages if item.get("confidence_level") == "publish_ready"]

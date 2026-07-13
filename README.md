@@ -181,10 +181,11 @@ topic_packages.md
 ```bash
 python -m douyin_topic_packager evaluate \
   --pain-signals outputs/topic_packages/pain_signals.json \
-  --topic-packages outputs/topic_packages/topic_packages.json
+  --topic-packages outputs/topic_packages/topic_packages.json \
+  --require-generator llm
 ```
 
-它会检查证据溯源率、未知痛点、虚构素材指令、越界个案判断和可发布选题数量。发布新版本或更换 LLM 时，建议用同一份脱敏输入连续运行三次；详细标准见 `evals/README.md`。
+它会检查证据溯源率、未知痛点、虚构素材指令、越界个案判断、生成器来源和可发布选题数量。`--require-generator llm` 可以防止模型输出被规则版静默降级后仍误判为模型实测成功。发布新版本或更换 LLM 时，建议用同一份脱敏输入连续运行三次；详细标准见 `evals/README.md`。
 
 ## 测试
 

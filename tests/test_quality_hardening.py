@@ -110,6 +110,31 @@ def test_unknown_llm_pain_is_rejected_and_evidence_is_grounded():
     assert package.evidence_refs == signal.evidence_refs
 
 
+def test_signal_id_keeps_llm_package_when_pain_is_paraphrased():
+    signal = _grounded_signal()
+    raw = json.dumps(
+        {
+            "topic_packages": [
+                {
+                    "pain_signal_id": "P1",
+                    "brief_title": "先做这一步判断",
+                    "topic": "给出三个判断动作",
+                    "pain_point": "模型重新概括过的痛点",
+                    "evidence": signal.evidence,
+                    "recommended_angle": "给出三个判断动作",
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    package = normalize_llm_topic_packages(raw, [signal])[0]
+
+    assert package.pain_point == signal.pain_point
+    assert package.metadata["generated_by"] == "llm"
+    assert package.metadata["pain_signal_id"] == "P1"
+
+
 def test_second_pass_audit_removes_fabrication_and_individual_diagnosis():
     audited = audit_topic_packages([_package()], [_grounded_signal()], [], conversion_mode="balanced")
 
@@ -279,3 +304,28 @@ def test_audit_makes_exploratory_title_hypothesis_transparent():
     assert "用评论痛点开头" not in audited[0].production_suggestions
     assert "用原视频标题中的问题开头" in audited[0].production_suggestions
     assert result["checks"]["audiences_are_specific"] is True
+
+
+def test_quality_gate_can_require_llm_generator():
+    signal = _grounded_signal()
+    package = _package(
+        evidence=signal.evidence,
+        evidence_refs=signal.evidence_refs,
+        metadata={"generated_by": "fallback_rules"},
+    )
+
+    failed = evaluate_topic_run(
+        pain_signals=[signal.to_dict()],
+        topic_packages=[package.to_dict()],
+        required_generator="llm",
+    )
+    package.metadata["generated_by"] = "llm"
+    passed = evaluate_topic_run(
+        pain_signals=[signal.to_dict()],
+        topic_packages=[package.to_dict()],
+        required_generator="llm",
+    )
+
+    assert failed["checks"]["required_generator_used"] is False
+    assert failed["metrics"]["generator_counts"] == {"fallback_rules": 1}
+    assert passed["checks"]["required_generator_used"] is True

@@ -122,6 +122,7 @@ def build_topic_package_messages(
     conversion_mode: str = "balanced",
 ) -> List[Dict[str, str]]:
     conversion_mode = normalize_conversion_mode(conversion_mode)
+    signal_ids = {item.pain_point: f"P{index}" for index, item in enumerate(pain_signals[:12], 1)}
     payload = {
         "videos": [
             {
@@ -134,9 +135,18 @@ def build_topic_package_messages(
             }
             for video in videos[:20]
         ],
-        "pain_signals": [item.to_dict() for item in pain_signals[:12]],
-        "angle_candidates": [item.to_dict() for item in angle_candidates[:16]],
-        "validation_scorecards": [item.to_dict() for item in scorecards[:12]],
+        "pain_signals": [
+            {"pain_signal_id": signal_ids[item.pain_point], **item.to_dict()}
+            for item in pain_signals[:12]
+        ],
+        "angle_candidates": [
+            {"pain_signal_id": signal_ids.get(item.pain_point, ""), **item.to_dict()}
+            for item in angle_candidates[:16]
+        ],
+        "validation_scorecards": [
+            {"pain_signal_id": signal_ids.get(item.pain_point, ""), **item.to_dict()}
+            for item in scorecards[:12]
+        ],
     }
     system_prompt = (
         "你是短视频深度选题研究员。你的任务是把对标账号的视频标题、评论痛点、角度候选和验证评分，"
@@ -153,17 +163,19 @@ def build_topic_package_messages(
         "Never request fabricated cases, fake amounts, fake screenshots, or invented proof. "
         "Do not offer individual legal, medical, or financial diagnosis in a CTA."
         " Keep brief_title within 14-28 Chinese characters and do not concatenate the full pain and angle."
+        " Every package must copy one pain_signal_id exactly from the input (for example P1)."
+        " Use different pain_signal_id values before creating a second angle for the same signal."
         f" {CONVERSION_MODE_INSTRUCTIONS[conversion_mode]}"
     )
     user_prompt = (
         "请生成 3-8 个 topic_packages。每个对象必须包含："
-        "brief_title, topic, pain_point, evidence, target_audience, opening_hook, "
+        "pain_signal_id, brief_title, topic, pain_point, evidence, target_audience, opening_hook, "
         "recommended_angle, proof_needed, cta_direction, risk_notes, production_suggestions, "
         "fit_score, why_worth_shooting, cover_copy, first_three_seconds, script_outline, "
         "comment_cta, material_notes。\n\n"
         "质量要求：\n"
         "1. brief_title 要像用户能点击选择的选题标题。\n"
-        "2. pain_point 必须来自输入信号，不得凭空创造行业和身份。\n"
+        "2. pain_signal_id 必须逐字复制输入中的 P 编号；pain_point 可以概括表达，但不得改变含义。\n"
         "3. evidence 必须引用评论、标题或描述里的真实表达。\n"
         "4. opening_hook 要像口播第一句话，具体、有代入感。\n"
         "5. recommended_angle 要说明这条视频怎么讲，不要复述痛点。\n"
@@ -250,14 +262,19 @@ def normalize_llm_topic_packages(
     if not isinstance(items, list):
         return []
     signal_by_pain = {signal.pain_point: signal for signal in pain_signals if signal.pain_point}
+    signal_by_id = {f"P{index}": signal for index, signal in enumerate(pain_signals, 1)}
     known_pains = set(signal_by_pain)
     normalized: List[TopicPackage] = []
     seen: set[str] = set()
     for item in items:
         if not isinstance(item, dict):
             continue
+        pain_signal_id = _text(item.get("pain_signal_id")).upper()
+        signal = signal_by_id.get(pain_signal_id)
         pain = _text(item.get("pain_point") or "")
-        if pain not in known_pains:
+        if signal is not None:
+            pain = signal.pain_point
+        elif pain not in known_pains:
             matched = next((known for known in known_pains if pain and (known in pain or pain in known)), "")
             if not matched:
                 continue
@@ -314,7 +331,12 @@ def normalize_llm_topic_packages(
                 or _material_notes(evidence_clean),
                 evidence_refs=evidence_refs,
                 confidence_level="publish_ready" if _signal_is_actionable(signal) else "exploratory",
-                metadata={"generated_by": "llm", "conversion_mode": conversion_mode, "llm_raw": item},
+                metadata={
+                    "generated_by": "llm",
+                    "conversion_mode": conversion_mode,
+                    "pain_signal_id": pain_signal_id,
+                    "llm_raw": item,
+                },
             )
         )
     normalized.sort(key=lambda item: item.fit_score, reverse=True)
@@ -505,6 +527,7 @@ def generate_topic_packages(
                     conversion_mode=conversion_mode,
                 )
                 return filter_topic_packages(packages, min_fit_score=min_fit_score, package_limit=package_limit)
+            print("[WARN] LLM 输出未通过痛点与证据校验，已降级为规则版选题包。")
         except Exception as exc:  # noqa: BLE001
             print(f"[WARN] LLM 选题包生成失败，使用规则版结果：{exc}")
     packages = fallback_topic_packages(pain_signals, candidates, scorecards, conversion_mode=conversion_mode)

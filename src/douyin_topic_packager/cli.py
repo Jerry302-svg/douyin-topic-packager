@@ -99,6 +99,12 @@ def main() -> None:
     evaluate = subparsers.add_parser("evaluate", help="对已生成的选题 JSON 做离线质量检查")
     evaluate.add_argument("--pain-signals", required=True, help="pain_signals.json 路径")
     evaluate.add_argument("--topic-packages", required=True, help="topic_packages.json 路径")
+    evaluate.add_argument(
+        "--require-generator",
+        choices=["llm", "fallback_rules"],
+        default="",
+        help="要求全部选题包来自指定生成器；模型回归时建议使用 llm",
+    )
 
     run = subparsers.add_parser("run", help="从主页分享链接直接生成选题包")
     run.add_argument("--profile-url", required=True, help="抖音博主主页分享链接或包含链接的整段分享文本")
@@ -158,6 +164,7 @@ def main() -> None:
         result = evaluate_topic_run(
             pain_signals=json.loads(Path(args.pain_signals).read_text(encoding="utf-8")),
             topic_packages=json.loads(Path(args.topic_packages).read_text(encoding="utf-8")),
+            required_generator=args.require_generator,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result["passed"]:
