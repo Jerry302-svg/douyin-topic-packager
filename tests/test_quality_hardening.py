@@ -135,6 +135,30 @@ def test_signal_id_keeps_llm_package_when_pain_is_paraphrased():
     assert package.metadata["pain_signal_id"] == "P1"
 
 
+def test_evidence_recovers_signal_when_llm_omits_signal_id():
+    signal = _grounded_signal()
+    raw = json.dumps(
+        {
+            "topic_packages": [
+                {
+                    "brief_title": "证据反向绑定",
+                    "topic": "按证据找到痛点",
+                    "pain_point": "完全重新概括的说法",
+                    "evidence": signal.evidence,
+                    "recommended_angle": "给出三个判断动作",
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    package = normalize_llm_topic_packages(raw, [signal])[0]
+
+    assert package.pain_point == signal.pain_point
+    assert package.metadata["generated_by"] == "llm"
+    assert package.evidence == signal.evidence
+
+
 def test_second_pass_audit_removes_fabrication_and_individual_diagnosis():
     package = _package(
         comment_cta="留下你的材料，我来帮你判断第一步",

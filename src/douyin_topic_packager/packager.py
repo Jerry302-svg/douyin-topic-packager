@@ -199,18 +199,31 @@ def build_topic_package_messages(
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
 
-def build_topic_package_repair_messages(raw_text: str) -> List[Dict[str, str]]:
+def build_topic_package_repair_messages(
+    raw_text: str,
+    pain_signals: List[PainSignal] | None = None,
+) -> List[Dict[str, str]]:
+    allowed_signals = [
+        {
+            "pain_signal_id": f"P{index}",
+            "pain_point": signal.pain_point,
+            "evidence": signal.evidence,
+        }
+        for index, signal in enumerate((pain_signals or [])[:12], 1)
+    ]
     system_prompt = (
         "You are a strict JSON repair tool. Return only one valid JSON object. "
         "Do not add markdown, explanations, code fences, XML tags, or hidden reasoning. "
         "Keep all Chinese content and field meanings unchanged. "
-        "The final JSON object must contain a topic_packages array."
+        "The final JSON object must contain a topic_packages array. "
+        "When allowed pain signals are provided, every package must use the matching pain_signal_id exactly."
     )
     user_prompt = (
         "Repair the following model output into strict JSON. "
         "Preserve the topic_packages content as much as possible. "
         "If a value contains English double quotes, replace them with Chinese corner quotes. "
-        "Output JSON only.\n\n"
+        "Match each package to the allowed signal whose evidence it quotes. Output JSON only.\n\n"
+        f"Allowed pain signals:\n{json.dumps(allowed_signals, ensure_ascii=False, indent=2)}\n\n"
         f"{raw_text[:12000]}"
     )
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
@@ -255,6 +268,40 @@ def _ground_evidence(requested: Iterable[Any], signal: PainSignal) -> tuple[List
     return evidence[:8], grounded_refs[:8]
 
 
+def _match_signal_by_evidence(
+    requested: Iterable[Any],
+    pain_signals: List[PainSignal],
+) -> PainSignal | None:
+    requested_values = {_normalized_match_text(value) for value in requested if _normalized_match_text(value)}
+    if not requested_values:
+        return None
+    scored: List[tuple[int, PainSignal]] = []
+    for signal in pain_signals:
+        source_values = {
+            _normalized_match_text(ref.get("text"))
+            for ref in signal.evidence_refs
+            if _normalized_match_text(ref.get("text"))
+        } or {_normalized_match_text(value) for value in signal.evidence if _normalized_match_text(value)}
+        score = sum(
+            1
+            for requested_value in requested_values
+            if any(
+                requested_value == source_value
+                or requested_value in source_value
+                or source_value in requested_value
+                for source_value in source_values
+            )
+        )
+        if score:
+            scored.append((score, signal))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: item[0], reverse=True)
+    if len(scored) > 1 and scored[0][0] == scored[1][0]:
+        return None
+    return scored[0][1]
+
+
 def normalize_llm_topic_packages(
     raw_text: str,
     pain_signals: List[PainSignal],
@@ -280,6 +327,9 @@ def normalize_llm_topic_packages(
     for item in items:
         if not isinstance(item, dict):
             continue
+        evidence = item.get("evidence") or []
+        if isinstance(evidence, str):
+            evidence = [evidence]
         pain_signal_id = _text(item.get("pain_signal_id")).upper()
         signal = signal_by_id.get(pain_signal_id)
         pain = _text(item.get("pain_point") or "")
@@ -288,8 +338,12 @@ def normalize_llm_topic_packages(
         elif pain not in known_pains:
             matched = next((known for known in known_pains if pain and (known in pain or pain in known)), "")
             if not matched:
-                continue
-            pain = matched
+                signal = _match_signal_by_evidence(evidence, pain_signals)
+                if signal is None:
+                    continue
+                pain = signal.pain_point
+            else:
+                pain = matched
         angle = _text(item.get("recommended_angle") or item.get("topic") or "")
         title = _text(item.get("brief_title") or angle or pain)
         if not pain or not angle or not title:
@@ -299,9 +353,6 @@ def normalize_llm_topic_packages(
             continue
         seen.add(key)
         signal = signal_by_pain[pain]
-        evidence = item.get("evidence") or []
-        if isinstance(evidence, str):
-            evidence = [evidence]
         risk_notes = item.get("risk_notes") or ["不要凭空编造案例、金额或确定性结果"]
         if isinstance(risk_notes, str):
             risk_notes = [risk_notes]
@@ -538,7 +589,7 @@ def generate_topic_packages(
                 )
                 return filter_topic_packages(packages, min_fit_score=min_fit_score, package_limit=package_limit)
             repaired = llm_client.complete(
-                build_topic_package_repair_messages(raw),
+                build_topic_package_repair_messages(raw, pain_signals),
                 temperature=0.0,
                 max_tokens=6000,
             )
