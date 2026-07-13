@@ -26,6 +26,16 @@ CONVERSION_MODE_INSTRUCTIONS = {
     ),
 }
 
+UNSAFE_CTA_PHRASES = (
+    "我帮你判断",
+    "我告诉你能不能",
+    "我帮你诊断",
+    "我帮你看",
+    "报出你的金额",
+    "留下你的金额",
+    "金额区间",
+)
+
 
 def normalize_conversion_mode(value: str | None) -> str:
     mode = (value or "balanced").strip().lower().replace("_", "-")
@@ -376,14 +386,27 @@ def audit_topic_packages(
             package.proof_needed = "补充真实、可脱敏且有使用权限的场景、材料或公开来源；没有真实材料时明确使用示意图。"
             warnings.append("已移除要求虚构证明材料的指令。")
 
-        unsafe_cta = any(
-            phrase in package.cta_direction
-            for phrase in ["我帮你判断", "我告诉你能不能", "我帮你诊断", "报出你的金额", "留下你的金额"]
+        cta_text = " ".join(
+            [package.cta_direction, package.comment_cta, *package.script_outline]
         )
+        unsafe_cta = any(phrase in cta_text for phrase in UNSAFE_CTA_PHRASES)
         if unsafe_cta:
             package.cta_direction = _fallback_cta(package.pain_point, conversion_mode)
             package.comment_cta = package.cta_direction
+            package.script_outline = [
+                line
+                for line in package.script_outline
+                if not any(phrase in line for phrase in UNSAFE_CTA_PHRASES)
+            ]
+            package.script_outline.append("结尾邀请用户描述非敏感的处理阶段或常见障碍，不收集金额和个案材料。")
             warnings.append("已将个案判断或敏感信息收集 CTA 改为一般性场景讨论。")
+
+        if signal.signal_type == "content_hypothesis" and "权威" in package.proof_needed:
+            package.proof_needed = (
+                "把原视频标题作为待核验假设，并补充可公开查验的来源或专业审核意见；"
+                "不能把对标账号标题本身当作权威依据。"
+            )
+            warnings.append("已将标题来源从权威依据降级为待核验假设。")
 
         duplicate = next(
             (

@@ -136,12 +136,18 @@ def test_signal_id_keeps_llm_package_when_pain_is_paraphrased():
 
 
 def test_second_pass_audit_removes_fabrication_and_individual_diagnosis():
-    audited = audit_topic_packages([_package()], [_grounded_signal()], [], conversion_mode="balanced")
+    package = _package(
+        comment_cta="留下你的金额区间，我帮你看更像哪条路径",
+        script_outline=["结尾让用户写金额区间，我帮你看起算点"],
+    )
+    audited = audit_topic_packages([package], [_grounded_signal()], [], conversion_mode="balanced")
 
     assert len(audited) == 1
     assert audited[0].evidence == ["我不知道第一步怎么做，有没有简单办法？"]
     assert "虚构" not in audited[0].proof_needed
     assert "我帮你判断" not in audited[0].cta_direction
+    assert "金额区间" not in audited[0].comment_cta
+    assert all("我帮你看" not in line for line in audited[0].script_outline)
     assert audited[0].quality_warnings
     assert audited[0].confidence_level == "publish_ready"
 
@@ -288,6 +294,7 @@ def test_audit_makes_exploratory_title_hypothesis_transparent():
     package = _package(
         target_audience="当前选题对应的目标用户",
         why_worth_shooting="适合直接拍摄",
+        proof_needed="把原视频标题作为权威表达",
         production_suggestions=["适合口播", "用评论痛点开头"],
         evidence=signal.evidence,
         evidence_refs=signal.evidence_refs,
@@ -303,6 +310,7 @@ def test_audit_makes_exploratory_title_hypothesis_transparent():
     assert "具体场景仍需进一步验证" in audited[0].target_audience
     assert "用评论痛点开头" not in audited[0].production_suggestions
     assert "用原视频标题中的问题开头" in audited[0].production_suggestions
+    assert "不能把对标账号标题本身当作权威依据" in audited[0].proof_needed
     assert result["checks"]["audiences_are_specific"] is True
 
 

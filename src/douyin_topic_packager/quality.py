@@ -8,8 +8,10 @@ UNSAFE_PHRASES = (
     "编造",
     "我帮你判断",
     "我帮你诊断",
+    "我帮你看",
     "报出你的金额",
     "留下你的金额",
+    "金额区间",
 )
 GENERIC_AUDIENCES = {"", "目标用户", "相关用户", "当前选题对应的目标用户"}
 
@@ -50,7 +52,14 @@ def evaluate_topic_run(
         generator_counts[generator] = generator_counts.get(generator, 0) + 1
         searchable = " ".join(
             str(package.get(key) or "")
-            for key in ("proof_needed", "cta_direction", "comment_cta", "production_suggestions")
+            for key in (
+                "proof_needed",
+                "cta_direction",
+                "comment_cta",
+                "script_outline",
+                "production_suggestions",
+                "material_notes",
+            )
         )
         unsafe_count += sum(searchable.count(phrase) for phrase in UNSAFE_PHRASES)
 
