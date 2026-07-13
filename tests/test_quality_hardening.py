@@ -137,8 +137,8 @@ def test_signal_id_keeps_llm_package_when_pain_is_paraphrased():
 
 def test_second_pass_audit_removes_fabrication_and_individual_diagnosis():
     package = _package(
-        comment_cta="留下你的金额区间，我帮你看更像哪条路径",
-        script_outline=["结尾让用户写金额区间，我帮你看起算点"],
+        comment_cta="留下你的材料，我来帮你判断第一步",
+        script_outline=["结尾让用户留下发现日期，我帮你看起算点"],
     )
     audited = audit_topic_packages([package], [_grounded_signal()], [], conversion_mode="balanced")
 
@@ -146,7 +146,8 @@ def test_second_pass_audit_removes_fabrication_and_individual_diagnosis():
     assert audited[0].evidence == ["我不知道第一步怎么做，有没有简单办法？"]
     assert "虚构" not in audited[0].proof_needed
     assert "我帮你判断" not in audited[0].cta_direction
-    assert "金额区间" not in audited[0].comment_cta
+    assert "帮你判断" not in audited[0].comment_cta
+    assert all("留下发现日期" not in line for line in audited[0].script_outline)
     assert all("我帮你看" not in line for line in audited[0].script_outline)
     assert audited[0].quality_warnings
     assert audited[0].confidence_level == "publish_ready"

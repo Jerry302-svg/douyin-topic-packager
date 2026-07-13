@@ -6,12 +6,13 @@ from typing import Any, Dict, Iterable
 UNSAFE_PHRASES = (
     "虚构",
     "编造",
-    "我帮你判断",
+    "帮你判断",
     "我帮你诊断",
     "我帮你看",
     "报出你的金额",
     "留下你的金额",
     "金额区间",
+    "留下发现日期",
 )
 GENERIC_AUDIENCES = {"", "目标用户", "相关用户", "当前选题对应的目标用户"}
 
