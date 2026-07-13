@@ -40,12 +40,15 @@ class CommentItem:
 class PainSignal:
     pain_point: str
     evidence: List[str] = field(default_factory=list)
+    evidence_refs: List[Dict[str, Any]] = field(default_factory=list)
     evidence_count: int = 0
     source_video_ids: List[str] = field(default_factory=list)
     source_titles: List[str] = field(default_factory=list)
     signal_strength: int = 60
     confidence: float = 0.6
     evidence_level: str = "medium"
+    signal_type: str = "audience_pain"
+    is_actionable: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -72,6 +75,7 @@ class ValidationScorecard:
     total_score: int
     risk_notes: List[str] = field(default_factory=list)
     rewrite_suggestion: str = ""
+    score_reasons: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -97,6 +101,9 @@ class TopicPackage:
     script_outline: List[str] = field(default_factory=list)
     comment_cta: str = ""
     material_notes: List[str] = field(default_factory=list)
+    evidence_refs: List[Dict[str, Any]] = field(default_factory=list)
+    confidence_level: str = "exploratory"
+    quality_warnings: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:

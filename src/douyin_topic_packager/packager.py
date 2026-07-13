@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List
 
 from .llm import LLMClient, parse_json_from_llm_text
@@ -133,7 +134,9 @@ def build_topic_package_messages(
         " JSON must be the whole response: start with { and end with }. "
         "Do not output markdown, comments, code fences, XML tags, or hidden reasoning. "
         "If a string needs quotation marks, use Chinese corner quotes instead of raw English double quotes. "
-        "The pain_point field must be a concise human-readable pain summary, not a copied title, hashtag, or raw comment."
+        "The pain_point field must be a concise human-readable pain summary, not a copied title, hashtag, or raw comment. "
+        "Never request fabricated cases, fake amounts, fake screenshots, or invented proof. "
+        "Do not offer individual legal, medical, or financial diagnosis in a CTA."
         f" {CONVERSION_MODE_INSTRUCTIONS[conversion_mode]}"
     )
     user_prompt = (
@@ -174,6 +177,41 @@ def build_topic_package_repair_messages(raw_text: str) -> List[Dict[str, str]]:
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
 
+def _signal_is_actionable(signal: PainSignal) -> bool:
+    return bool(
+        signal.is_actionable
+        or (signal.signal_type == "audience_pain" and signal.evidence_level in {"medium", "strong"})
+    )
+
+
+def _normalized_match_text(value: Any) -> str:
+    return "".join(char.lower() for char in _text(value) if char.isalnum() or "\u4e00" <= char <= "\u9fff")
+
+
+def _ground_evidence(requested: Iterable[Any], signal: PainSignal) -> tuple[List[str], List[Dict[str, Any]]]:
+    refs = signal.evidence_refs or [
+        {"source_type": "legacy", "source_id": f"evidence-{index}", "text": text}
+        for index, text in enumerate(signal.evidence, 1)
+    ]
+    grounded_refs: List[Dict[str, Any]] = []
+    requested_values = [_normalized_match_text(value) for value in requested if _normalized_match_text(value)]
+    for ref in refs:
+        source_text = _text(ref.get("text"))
+        normalized_source = _normalized_match_text(source_text)
+        if not normalized_source:
+            continue
+        if requested_values and not any(
+            value == normalized_source or value in normalized_source or normalized_source in value
+            for value in requested_values
+        ):
+            continue
+        grounded_refs.append(dict(ref))
+    if not grounded_refs:
+        grounded_refs = [dict(ref) for ref in refs if _text(ref.get("text"))][:6]
+    evidence = [_text(ref.get("text")) for ref in grounded_refs if _text(ref.get("text"))]
+    return evidence[:8], grounded_refs[:8]
+
+
 def normalize_llm_topic_packages(
     raw_text: str,
     pain_signals: List[PainSignal],
@@ -191,17 +229,19 @@ def normalize_llm_topic_packages(
     items = parsed.get("topic_packages") or parsed.get("production_briefs") or parsed.get("briefs") or []
     if not isinstance(items, list):
         return []
-    known_pains = {signal.pain_point for signal in pain_signals if signal.pain_point}
-    evidence_by_pain = {signal.pain_point: signal.evidence for signal in pain_signals}
+    signal_by_pain = {signal.pain_point: signal for signal in pain_signals if signal.pain_point}
+    known_pains = set(signal_by_pain)
     normalized: List[TopicPackage] = []
     seen: set[str] = set()
     for item in items:
         if not isinstance(item, dict):
             continue
         pain = _text(item.get("pain_point") or "")
-        if known_pains and pain not in known_pains:
+        if pain not in known_pains:
             matched = next((known for known in known_pains if pain and (known in pain or pain in known)), "")
-            pain = matched or pain
+            if not matched:
+                continue
+            pain = matched
         angle = _text(item.get("recommended_angle") or item.get("topic") or "")
         title = _text(item.get("brief_title") or angle or pain)
         if not pain or not angle or not title:
@@ -210,7 +250,8 @@ def normalize_llm_topic_packages(
         if key in seen:
             continue
         seen.add(key)
-        evidence = item.get("evidence") or evidence_by_pain.get(pain) or []
+        signal = signal_by_pain[pain]
+        evidence = item.get("evidence") or []
         if isinstance(evidence, str):
             evidence = [evidence]
         risk_notes = item.get("risk_notes") or ["不要凭空编造案例、金额或确定性结果"]
@@ -220,7 +261,7 @@ def normalize_llm_topic_packages(
         if isinstance(suggestions, str):
             suggestions = [suggestions]
         comment_cta = _text(item.get("comment_cta") or item.get("cta_direction") or _fallback_cta(pain, conversion_mode))
-        evidence_clean = [_text(value) for value in evidence if _text(value)][:8]
+        evidence_clean, evidence_refs = _ground_evidence(evidence, signal)
         normalized.append(
             TopicPackage(
                 brief_title=title[:80],
@@ -251,11 +292,86 @@ def normalize_llm_topic_packages(
                     if _text(value)
                 ]
                 or _material_notes(evidence_clean),
+                evidence_refs=evidence_refs,
+                confidence_level="publish_ready" if _signal_is_actionable(signal) else "exploratory",
                 metadata={"generated_by": "llm", "conversion_mode": conversion_mode, "llm_raw": item},
             )
         )
     normalized.sort(key=lambda item: item.fit_score, reverse=True)
     return normalized[:8]
+
+
+def audit_topic_packages(
+    packages: List[TopicPackage],
+    pain_signals: List[PainSignal],
+    scorecards: List[ValidationScorecard],
+    *,
+    conversion_mode: str = "balanced",
+) -> List[TopicPackage]:
+    """Ground, de-duplicate and safety-check packages before they reach reports."""
+    signal_by_pain = {item.pain_point: item for item in pain_signals if item.pain_point}
+    score_by_angle = {item.angle: item for item in scorecards}
+    accepted: List[TopicPackage] = []
+    for package in packages:
+        signal = signal_by_pain.get(package.pain_point)
+        if signal is None:
+            continue
+        warnings = list(package.quality_warnings)
+        grounded_evidence, grounded_refs = _ground_evidence(package.evidence, signal)
+        if package.evidence != grounded_evidence:
+            warnings.append("模型证据未能逐字匹配，已替换为真实来源证据。")
+        if not grounded_evidence:
+            continue
+        package.evidence = grounded_evidence
+        package.evidence_refs = grounded_refs
+
+        if any(word in package.proof_needed for word in ["虚构", "编造", "假装真实", "伪造"]):
+            package.proof_needed = "补充真实、可脱敏且有使用权限的场景、材料或公开来源；没有真实材料时明确使用示意图。"
+            warnings.append("已移除要求虚构证明材料的指令。")
+
+        unsafe_cta = any(
+            phrase in package.cta_direction
+            for phrase in ["我帮你判断", "我告诉你能不能", "我帮你诊断", "报出你的金额", "留下你的金额"]
+        )
+        if unsafe_cta:
+            package.cta_direction = _fallback_cta(package.pain_point, conversion_mode)
+            package.comment_cta = package.cta_direction
+            warnings.append("已将个案判断或敏感信息收集 CTA 改为一般性场景讨论。")
+
+        duplicate = next(
+            (
+                existing
+                for existing in accepted
+                if SequenceMatcher(
+                    None,
+                    _normalized_match_text(existing.brief_title or existing.topic),
+                    _normalized_match_text(package.brief_title or package.topic),
+                ).ratio()
+                >= 0.82
+            ),
+            None,
+        )
+        if duplicate is not None:
+            continue
+
+        scorecard = score_by_angle.get(package.recommended_angle)
+        deterministic_score = scorecard.total_score if scorecard else signal.signal_strength
+        package.fit_score = int(round(package.fit_score * 0.7 + deterministic_score * 0.3))
+        package.confidence_level = "publish_ready" if _signal_is_actionable(signal) else "exploratory"
+        if package.confidence_level == "exploratory":
+            warnings.append("当前主要是弱证据或标题假设，只能作为探索性选题。")
+        package.quality_warnings = list(dict.fromkeys(warnings))
+        package.metadata = {
+            **(package.metadata or {}),
+            "audit": {
+                "grounded": True,
+                "confidence_level": package.confidence_level,
+                "warning_count": len(package.quality_warnings),
+            },
+        }
+        accepted.append(package)
+    accepted.sort(key=lambda item: item.fit_score, reverse=True)
+    return accepted
 
 
 def fallback_topic_packages(
@@ -294,6 +410,8 @@ def fallback_topic_packages(
                 script_outline=_script_outline(candidate.pain_point, candidate.angle),
                 comment_cta=_fallback_cta(candidate.pain_point, conversion_mode),
                 material_notes=_material_notes(signal.evidence),
+                evidence_refs=signal.evidence_refs,
+                confidence_level="publish_ready" if _signal_is_actionable(signal) else "exploratory",
                 metadata={"generated_by": "fallback_rules", "conversion_mode": conversion_mode},
             )
         )
@@ -322,6 +440,12 @@ def generate_topic_packages(
             )
             packages = normalize_llm_topic_packages(raw, pain_signals, conversion_mode=conversion_mode)
             if packages:
+                packages = audit_topic_packages(
+                    packages,
+                    pain_signals,
+                    scorecards,
+                    conversion_mode=conversion_mode,
+                )
                 return filter_topic_packages(packages, min_fit_score=min_fit_score, package_limit=package_limit)
             repaired = llm_client.complete(
                 build_topic_package_repair_messages(raw),
@@ -330,8 +454,15 @@ def generate_topic_packages(
             )
             packages = normalize_llm_topic_packages(repaired, pain_signals, conversion_mode=conversion_mode)
             if packages:
+                packages = audit_topic_packages(
+                    packages,
+                    pain_signals,
+                    scorecards,
+                    conversion_mode=conversion_mode,
+                )
                 return filter_topic_packages(packages, min_fit_score=min_fit_score, package_limit=package_limit)
         except Exception as exc:  # noqa: BLE001
             print(f"[WARN] LLM 选题包生成失败，使用规则版结果：{exc}")
     packages = fallback_topic_packages(pain_signals, candidates, scorecards, conversion_mode=conversion_mode)
+    packages = audit_topic_packages(packages, pain_signals, scorecards, conversion_mode=conversion_mode)
     return filter_topic_packages(packages, min_fit_score=min_fit_score, package_limit=package_limit)

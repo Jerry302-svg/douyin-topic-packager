@@ -7,7 +7,7 @@
 ```text
 Cookie 登录/导入
 -> 解析主页分享链接
--> 采集账号 Top20 视频
+-> 分页扫描账号视频
 -> 按评论数排序
 -> 采集视频评论
 -> 分析评论痛点
@@ -18,7 +18,7 @@ Cookie 登录/导入
 
 本项目不内置任何 LLM API Key。你需要自己选择模型供应商，并在 `.env` 里填写 Key。
 
-报告会把高可信痛点和弱证据观察分开展示，并为每个选题包生成封面文案、前三秒口播、拍摄结构、评论引导和素材准备，方便直接进入拍摄执行。
+报告会把真实评论痛点、标题内容假设和弱证据观察分开展示，并为每个选题包生成封面文案、前三秒口播、拍摄结构、评论引导和素材准备。只有证据达到门槛的选题才会标成可直接使用，其余会明确标成探索性选题。
 
 ## 环境要求
 
@@ -88,6 +88,17 @@ python -m douyin_topic_packager login
 python -m douyin_topic_packager run \
   --profile-url "抖音主页分享链接" \
   --top-n 20 \
+  --scan-pages 10 \
+  --llm
+```
+
+工具会先分页扫描主页，再从扫描结果里按评论数选择 Top20，避免只在最新一页里排序。评论采集默认并发数为 2，并对临时网络错误自动重试：
+
+```bash
+python -m douyin_topic_packager run \
+  --profile-url "抖音主页分享链接" \
+  --comment-concurrency 2 \
+  --include-replies \
   --llm
 ```
 
@@ -133,7 +144,7 @@ python -m douyin_topic_packager run \
   --llm
 ```
 
-`--resume` 会校验关键参数。比如本次 `--top-n` 或 `--max-comments-per-video` 和上次不同，工具不会盲目复用旧文件，而是重新采集对应阶段。每次运行会写入 `run_manifest.json`，记录参数、参数 hash、复用情况和结果数量。
+`--resume` 会校验关键参数。比如本次 `--top-n`、`--scan-pages`、`--max-comments-per-video` 或回复采集设置和上次不同，工具不会盲目复用旧文件。评论每完成一条视频都会更新 `comments.json` 和 `comments_status.json`；中断后只补失败或缺失的视频。每次运行会写入 `run_manifest.json`，记录参数、参数 hash、复用情况、失败视频数和结果数量。
 
 生成的 Markdown 报告会包含“运行摘要”，展示痛点数量、高可信痛点数量、弱证据观察数量、选题包数量和筛选条件。
 
@@ -152,6 +163,7 @@ python -m douyin_topic_packager analyze --comments outputs/topic_packages/commen
 ```text
 profile_videos.json
 comments.json
+comments_status.json
 pain_signals.json
 angle_candidates.json
 validation_scorecards.json
@@ -162,6 +174,18 @@ topic_packages.md
 
 `topic_packages.md` 是给人看的干净报告；`topic_packages.json` 适合接入其他自动化流程。
 
+## 质量回归
+
+生成选题包后，可以运行完全离线的质量门禁：
+
+```bash
+python -m douyin_topic_packager evaluate \
+  --pain-signals outputs/topic_packages/pain_signals.json \
+  --topic-packages outputs/topic_packages/topic_packages.json
+```
+
+它会检查证据溯源率、未知痛点、虚构素材指令、越界个案判断和可发布选题数量。发布新版本或更换 LLM 时，建议用同一份脱敏输入连续运行三次；详细标准见 `evals/README.md`。
+
 ## 测试
 
 开发或维护时建议安装开发依赖后运行测试：
@@ -170,6 +194,8 @@ topic_packages.md
 pip install -e ".[dev]"
 python -m pytest -q
 python -m compileall -q src tests
+python -m ruff check src/douyin_topic_packager tests
+python -m build
 ```
 
 这些测试只覆盖链接解析、选题包生成、LLM 输出清洗、报告渲染和项目配置，不会真实登录抖音、采集评论或安装 Playwright 浏览器。
@@ -178,7 +204,8 @@ python -m compileall -q src tests
 
 - 默认采集 Top20，并按评论数排序。
 - 本工具不下载视频、不转写视频，只使用主页视频信息和评论信号生成选题包。
-- 评论较少时也会生成选题包，但报告里会标记证据强弱。
+- 评论较少时仍可生成探索性选题，但不会把标题假设冒充成真实用户痛点。
+- 模型生成的证据必须匹配已采集标题或评论；匹配失败时会替换为真实来源或移除该选题。
 - 不默认任何行业、身份或立场；选题包只基于采集到的标题、描述、评论和用户配置生成。
 
 ## 第三方声明

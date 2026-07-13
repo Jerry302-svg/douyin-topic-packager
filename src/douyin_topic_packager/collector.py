@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, List
 from urllib.parse import parse_qs, urlparse
@@ -93,6 +94,7 @@ async def collect_profile_videos(
     *,
     top_n: int = 20,
     storage_state_path: str | Path = "runtime/douyin_storage_state.json",
+    scan_pages: int = 10,
 ) -> tuple[str, str, List[VideoItem]]:
     cookies = load_cookies_from_storage_state(storage_state_path)
     async with DouyinAPIClient(cookies=cookies) as client:
@@ -100,11 +102,41 @@ async def collect_profile_videos(
         sec_uid = parse_sec_uid(resolved_url)
         if not sec_uid:
             raise ValueError(f"无法从主页链接解析 sec_uid: {resolved_url}")
-        page = await client.get_user_post(sec_uid, count=max(20, int(top_n or 20)))
-        raw_items = page.get("items") or []
+        raw_items = await collect_profile_pages(client, sec_uid, scan_pages=scan_pages)
         videos = [normalize_aweme_item(item) for item in raw_items if isinstance(item, dict)]
         videos = [item for item in videos if item.aweme_id]
         return resolved_url, sec_uid, rank_videos_by_comment_count(videos, limit=top_n)
+
+
+async def collect_profile_pages(
+    client: DouyinAPIClient,
+    sec_uid: str,
+    *,
+    scan_pages: int = 10,
+    page_size: int = 20,
+) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    cursor = 0
+    for _ in range(max(1, int(scan_pages or 1))):
+        page = await client.get_user_post(sec_uid, max_cursor=cursor, count=max(1, int(page_size or 20)))
+        page_items = page.get("items") or page.get("aweme_list") or []
+        for item in page_items:
+            if not isinstance(item, dict):
+                continue
+            aweme_id = str(item.get("aweme_id") or item.get("group_id") or "")
+            if aweme_id and aweme_id in seen_ids:
+                continue
+            if aweme_id:
+                seen_ids.add(aweme_id)
+            items.append(item)
+        if not page.get("has_more"):
+            break
+        next_cursor = int(page.get("max_cursor") or 0)
+        if next_cursor == cursor:
+            break
+        cursor = next_cursor
+    return items
 
 
 def normalize_comment(aweme_id: str, item: Dict[str, Any]) -> CommentItem:
@@ -129,18 +161,53 @@ async def collect_comments_for_videos(
     storage_state_path: str | Path = "runtime/douyin_storage_state.json",
     max_comments_per_video: int = 0,
     page_size: int = 20,
-) -> List[CommentItem]:
+    include_replies: bool = False,
+    max_concurrency: int = 2,
+    max_retries: int = 3,
+    progress_callback=None,
+    return_status: bool = False,
+) -> List[CommentItem] | tuple[List[CommentItem], Dict[str, Dict[str, Any]]]:
     cookies = load_cookies_from_storage_state(storage_state_path)
-    comments: List[CommentItem] = []
+    comments_by_index: Dict[int, List[CommentItem]] = {}
+    statuses: Dict[str, Dict[str, Any]] = {}
     async with DouyinAPIClient(cookies=cookies) as client:
-        collector = CommentsCollector(client, include_replies=False, max_comments=max_comments_per_video, page_size=page_size)
-        for index, video in enumerate(videos, 1):
+        semaphore = asyncio.Semaphore(max(1, min(int(max_concurrency or 1), 5)))
+
+        async def collect_one(index: int, video: VideoItem):
             print(f"[{index}/{len(videos)}] 采集评论：{video.title[:40] or video.aweme_id}")
-            raw_items = await collector.collect(video.aweme_id) or []
+            collector = CommentsCollector(
+                client,
+                include_replies=include_replies,
+                max_comments=max_comments_per_video,
+                page_size=page_size,
+                max_retries=max_retries,
+            )
+            async with semaphore:
+                raw_result = await collector.collect(video.aweme_id)
+            raw_items = raw_result or []
+            normalized: List[CommentItem] = []
             for item in raw_items:
                 if not isinstance(item, dict):
                     continue
                 comment = normalize_comment(video.aweme_id, item)
                 if comment.text:
-                    comments.append(comment)
+                    normalized.append(comment)
+            status = {
+                "status": "success" if raw_result is not None else "failed",
+                "comment_count": len(normalized),
+                "error": collector.last_error,
+            }
+            return index, video.aweme_id, normalized, status
+
+        tasks = [asyncio.create_task(collect_one(index, video)) for index, video in enumerate(videos, 1)]
+        for task in asyncio.as_completed(tasks):
+            index, aweme_id, normalized, status = await task
+            comments_by_index[index] = normalized
+            statuses[aweme_id] = status
+            if progress_callback is not None:
+                partial = [item for key in sorted(comments_by_index) for item in comments_by_index[key]]
+                progress_callback(partial, dict(statuses))
+    comments = [item for key in sorted(comments_by_index) for item in comments_by_index[key]]
+    if return_status:
+        return comments, statuses
     return comments

@@ -20,7 +20,7 @@ def _sample_data():
     ]
     comments = [
         CommentItem(aweme_id="100", text="我就是不知道第一步应该怎么做，有没有简单办法？", like_count=8),
-        CommentItem(aweme_id="100", text="这个问题我也遇到了，最怕试了还是没效果", like_count=5),
+        CommentItem(aweme_id="100", text="第一步不知道怎么做，最怕试了还是没效果", like_count=5),
     ]
     return videos, comments
 
@@ -39,6 +39,19 @@ def _topic_package(title, score):
         risk_notes=["risk"],
         production_suggestions=["suggestion"],
         fit_score=score,
+        confidence_level="publish_ready",
+    )
+
+
+def _llm_signal():
+    return PainSignal(
+        pain_point="pain",
+        evidence=["comment"],
+        evidence_count=2,
+        signal_strength=60,
+        confidence=0.7,
+        evidence_level="strong",
+        is_actionable=True,
     )
 
 
@@ -178,7 +191,7 @@ def test_generate_topic_packages_repairs_invalid_llm_json_once():
                 '"why_worth_shooting":"worth"}]}'
             )
 
-    packages = generate_topic_packages([], [], [], [], llm_client=FakeLLM())
+    packages = generate_topic_packages([], [_llm_signal()], [], [], llm_client=FakeLLM())
 
     assert packages[0].brief_title == "fixed"
     assert packages[0].metadata["generated_by"] == "llm"
@@ -204,7 +217,7 @@ def test_generate_topic_packages_marks_conversion_mode():
                 '"why_worth_shooting":"worth"}]}'
             )
 
-    packages = generate_topic_packages([], [], [], [], llm_client=FakeLLM(), conversion_mode="strong")
+    packages = generate_topic_packages([], [_llm_signal()], [], [], llm_client=FakeLLM(), conversion_mode="strong")
 
     assert packages[0].metadata["generated_by"] == "llm"
     assert packages[0].metadata["conversion_mode"] == "strong"
@@ -253,7 +266,7 @@ def test_generate_topic_packages_filters_llm_results_by_score_and_limit():
 
     packages = generate_topic_packages(
         [],
-        [],
+        [_llm_signal()],
         [],
         [],
         llm_client=FakeLLM(),

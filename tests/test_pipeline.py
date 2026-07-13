@@ -104,7 +104,7 @@ def test_run_topic_package_pipeline_resume_recollects_when_parameters_change(tmp
     )
     calls = {"collect": 0, "comments": 0}
 
-    async def fake_collect(profile_url, *, output_dir, top_n, storage_state_path):
+    async def fake_collect(profile_url, *, output_dir, top_n, storage_state_path, scan_pages):
         calls["collect"] += 1
         assert top_n == 5
         (root / "profile_meta.json").write_text(
@@ -133,7 +133,15 @@ def test_run_topic_package_pipeline_resume_recollects_when_parameters_change(tmp
             "profile_videos": str(root / "profile_videos.json"),
         }
 
-    async def fake_comments(videos_path, *, output_dir, storage_state_path, max_comments_per_video):
+    async def fake_comments(
+        videos_path,
+        *,
+        output_dir,
+        storage_state_path,
+        max_comments_per_video,
+        include_replies,
+        max_concurrency,
+    ):
         calls["comments"] += 1
         assert max_comments_per_video == 9
         (root / "comments.json").write_text(
@@ -172,7 +180,7 @@ def test_run_topic_package_pipeline_resume_recollects_when_parameters_change(tmp
 def test_run_topic_package_pipeline_fails_when_profile_collection_is_empty(tmp_path, monkeypatch):
     root = Path(tmp_path)
 
-    async def fake_collect(profile_url, *, output_dir, top_n, storage_state_path):
+    async def fake_collect(profile_url, *, output_dir, top_n, storage_state_path, scan_pages):
         (root / "profile_meta.json").write_text(
             json.dumps(
                 {
@@ -207,3 +215,93 @@ def test_run_topic_package_pipeline_fails_when_profile_collection_is_empty(tmp_p
                 top_n=8,
             )
         )
+
+
+def test_resume_retries_only_failed_comment_videos(tmp_path, monkeypatch):
+    root = Path(tmp_path)
+    (root / "profile_meta.json").write_text(
+        json.dumps(
+            {
+                "source_url": "https://v.douyin.com/example/",
+                "resolved_url": "https://www.douyin.com/user/test",
+                "sec_uid": "uid",
+                "top_n": 2,
+                "scan_pages": 10,
+            }
+        ),
+        encoding="utf-8",
+    )
+    videos = [
+        {"aweme_id": "100", "title": "第一步怎么办", "comment_count": 2},
+        {"aweme_id": "200", "title": "第二条", "comment_count": 1},
+    ]
+    (root / "profile_videos.json").write_text(json.dumps(videos, ensure_ascii=False), encoding="utf-8")
+    (root / "comments.json").write_text(
+        json.dumps([{"aweme_id": "100", "cid": "c1", "text": "第一步不知道怎么做？"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (root / "comments_status.json").write_text(
+        json.dumps(
+            {
+                "100": {"status": "success", "comment_count": 1, "error": ""},
+                "200": {"status": "failed", "comment_count": 0, "error": "timeout"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "parameters": {
+                    "top_n": 2,
+                    "max_comments_per_video": 10,
+                    "include_replies": False,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def forbidden_collect(*args, **kwargs):
+        raise AssertionError("profile should be reused")
+
+    calls = []
+
+    async def retry_failed(videos_path, **kwargs):
+        calls.append(kwargs["only_video_ids"])
+        merged = [
+            {"aweme_id": "100", "cid": "c1", "text": "第一步不知道怎么做？"},
+            {"aweme_id": "200", "cid": "c2", "text": "第二步做错了怎么办？"},
+        ]
+        (root / "comments.json").write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
+        (root / "comments_status.json").write_text(
+            json.dumps(
+                {
+                    "100": {"status": "success", "comment_count": 1, "error": ""},
+                    "200": {"status": "success", "comment_count": 1, "error": ""},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "comments": str(root / "comments.json"),
+            "comments_status": str(root / "comments_status.json"),
+        }
+
+    monkeypatch.setattr(pipeline, "collect_profile_step", forbidden_collect)
+    monkeypatch.setattr(pipeline, "collect_comments_step", retry_failed)
+
+    outputs = asyncio.run(
+        pipeline.run_topic_package_pipeline(
+            profile_url="https://v.douyin.com/example/",
+            output_dir=root,
+            top_n=2,
+            max_comments_per_video=10,
+            resume=True,
+        )
+    )
+    manifest = json.loads(Path(outputs["run_manifest"]).read_text(encoding="utf-8"))
+
+    assert calls == [{"200"}]
+    assert manifest["resume"]["retried_comment_videos"] == 1
+    assert manifest["counts"]["failed_comment_videos"] == 0

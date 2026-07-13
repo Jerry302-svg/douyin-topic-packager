@@ -12,6 +12,14 @@ STOP_WORDS = {
     "一个", "没有", "感觉", "老师", "博主", "视频", "内容", "问题", "的话",
 }
 
+GENERIC_HELP_TEXTS = {
+    "老师你好",
+    "老师你好我想你帮帮忙",
+    "帮帮我",
+    "求回复",
+    "路过",
+}
+
 
 def _clean_text(value: str) -> str:
     return " ".join(str(value or "").replace("\n", " ").split()).strip()
@@ -65,6 +73,15 @@ def _question_or_pain_score(text: str) -> int:
     return score
 
 
+def _is_meaningful_comment(text: str) -> bool:
+    clean = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", _clean_text(text))
+    if len(clean) < 6:
+        return False
+    if clean in GENERIC_HELP_TEXTS:
+        return False
+    return _question_or_pain_score(text) > 0
+
+
 def _evidence_level(evidence_count: int, confidence: float) -> str:
     if evidence_count >= 2 or confidence >= 0.68:
         return "strong"
@@ -82,25 +99,39 @@ def build_pain_signals(videos: List[VideoItem], comments: List[CommentItem], lim
 
     buckets: Dict[str, dict] = {}
 
-    def add_signal(label: str, evidence: str, video: VideoItem | None, weight: int) -> None:
+    def add_signal(
+        label: str,
+        evidence: str,
+        video: VideoItem | None,
+        weight: int,
+        *,
+        signal_type: str,
+        evidence_ref: dict,
+    ) -> None:
         pain = _clean_text(label).strip("，。！？； ")
         evidence_text = _clean_text(evidence)
         if not pain or not evidence_text:
             return
+        bucket_key = f"{signal_type}::{pain}"
         bucket = buckets.setdefault(
-            pain,
+            bucket_key,
             {
+                "pain": pain,
                 "evidence": [],
+                "evidence_refs": [],
                 "count": 0,
                 "video_ids": set(),
                 "titles": set(),
                 "score": 0,
+                "signal_type": signal_type,
             },
         )
         if evidence_text not in bucket["evidence"]:
             bucket["evidence"].append(evidence_text)
         bucket["count"] += 1
         bucket["score"] += weight
+        if evidence_ref not in bucket["evidence_refs"]:
+            bucket["evidence_refs"].append(evidence_ref)
         if video:
             bucket["video_ids"].add(video.aweme_id)
             if video.title:
@@ -110,41 +141,77 @@ def build_pain_signals(videos: List[VideoItem], comments: List[CommentItem], lim
         title_keywords = _keywords(f"{video.title} {video.desc}", limit=4)
         title_label = _label_from_text(video.title or video.desc, title_keywords)
         if title_label:
-            add_signal(title_label, video.title or video.desc or title_label, video, 12 + min(video.comment_count, 50))
+            title_text = video.title or video.desc or title_label
+            add_signal(
+                title_label,
+                title_text,
+                video,
+                12 + min(video.comment_count, 50),
+                signal_type="content_hypothesis",
+                evidence_ref={
+                    "source_type": "video_title",
+                    "source_id": video.aweme_id,
+                    "aweme_id": video.aweme_id,
+                    "url": video.url,
+                    "text": title_text,
+                },
+            )
 
     for comment in comments:
         text = _clean_text(comment.text)
-        if not text:
+        if not text or not _is_meaningful_comment(text):
             continue
         video = videos_by_id.get(comment.aweme_id)
         kws = _keywords(text, limit=5)
         score = _question_or_pain_score(text) + min(comment.like_count, 30)
         if not kws:
             continue
-        if score <= 0 and len(text) < 8:
-            continue
         label = _cluster_label_from_comment(text, kws)
-        add_signal(label, text[:180], video, max(8, score))
+        add_signal(
+            label,
+            text[:180],
+            video,
+            max(8, score),
+            signal_type="audience_pain",
+            evidence_ref={
+                "source_type": "comment",
+                "source_id": comment.cid or f"{comment.aweme_id}:{comment.create_time}:{len(text)}",
+                "aweme_id": comment.aweme_id,
+                "text": text[:180],
+            },
+        )
 
     signals: List[PainSignal] = []
-    for pain, bucket in buckets.items():
+    for bucket in buckets.values():
+        pain = bucket["pain"]
         evidence_count = int(bucket["count"])
         score = int(bucket["score"])
         strength = max(45, min(96, 45 + min(evidence_count * 4, 30) + min(score // 8, 21)))
         confidence = round(max(0.45, min(0.95, 0.45 + evidence_count * 0.03 + score / 600)), 2)
+        signal_type = str(bucket["signal_type"])
+        evidence_level = _evidence_level(evidence_count, confidence)
+        if signal_type == "content_hypothesis":
+            evidence_level = "weak"
+            confidence = min(confidence, 0.55)
         signals.append(
             PainSignal(
                 pain_point=pain,
                 evidence=bucket["evidence"][:8],
+                evidence_refs=bucket["evidence_refs"][:8],
                 evidence_count=evidence_count,
                 source_video_ids=sorted(bucket["video_ids"])[:8],
                 source_titles=sorted(bucket["titles"])[:5],
                 signal_strength=strength,
                 confidence=confidence,
-                evidence_level=_evidence_level(evidence_count, confidence),
+                evidence_level=evidence_level,
+                signal_type=signal_type,
+                is_actionable=signal_type == "audience_pain" and evidence_level != "weak",
             )
         )
-    signals.sort(key=lambda item: (item.signal_strength, item.evidence_count), reverse=True)
+    signals.sort(
+        key=lambda item: (item.is_actionable, item.signal_type == "audience_pain", item.signal_strength, item.evidence_count),
+        reverse=True,
+    )
     return signals[:limit]
 
 
@@ -187,16 +254,24 @@ def build_angle_candidates(signals: Iterable[PainSignal], limit: int = 16) -> Li
 def validate_angles(candidates: Iterable[AngleCandidate], signals: Iterable[PainSignal], limit: int = 12) -> List[ValidationScorecard]:
     signal_by_pain = {signal.pain_point: signal for signal in signals}
     scorecards: List[ValidationScorecard] = []
-    for index, candidate in enumerate(candidates, 1):
+    seen_pains: Counter[str] = Counter()
+    for candidate in candidates:
         signal = signal_by_pain.get(candidate.pain_point)
         evidence_strength = int(signal.signal_strength if signal else 62)
+        seen_pains[candidate.pain_point] += 1
+        audience_fit = 88 if signal and signal.is_actionable else 66
+        novelty = max(62, 84 - (seen_pains[candidate.pain_point] - 1) * 10)
+        conversion = min(92, 58 + evidence_strength // 3 + (8 if signal and signal.is_actionable else 0))
+        production_ease = 80 if "对比" in candidate.proof_needed else 84
+        sensitive = any(word in candidate.pain_point for word in ["退款", "法院", "诊断", "金额", "合同", "医疗"])
+        compliance = 78 if sensitive else 86
         scores = {
             "evidence_strength": evidence_strength,
-            "audience_fit": min(95, 68 + evidence_strength // 5),
-            "novelty": 78 if index % 2 else 72,
-            "conversion_potential": min(92, 62 + evidence_strength // 4),
-            "production_ease": 88,
-            "compliance_safety": 90,
+            "audience_fit": audience_fit,
+            "novelty": novelty,
+            "conversion_potential": conversion,
+            "production_ease": production_ease,
+            "compliance_safety": compliance,
         }
         total = int(sum(scores.values()) / len(scores))
         scorecards.append(
@@ -207,6 +282,14 @@ def validate_angles(candidates: Iterable[AngleCandidate], signals: Iterable[Pain
                 total_score=total,
                 risk_notes=["不要承诺保证结果", "不要凭空编造案例、身份、金额或确定性结论"],
                 rewrite_suggestion="" if total >= 75 else "把痛点说得更具体，补一个更真实的场景。",
+                score_reasons={
+                    "evidence_strength": f"来自 {signal.evidence_count if signal else 0} 条证据，类型为 {signal.signal_type if signal else 'unknown'}。",
+                    "audience_fit": "真实评论痛点加分。" if signal and signal.is_actionable else "当前主要来自标题假设，受众匹配度降级。",
+                    "novelty": f"同一痛点的第 {seen_pains[candidate.pain_point]} 个角度，重复角度递减。",
+                    "conversion_potential": "根据证据强度和可行动性计算。",
+                    "production_ease": "需要场景或对比素材，制作难度按素材要求计算。",
+                    "compliance_safety": "敏感领域词会降低合规分。" if sensitive else "未检测到明显敏感领域词。",
+                },
             )
         )
     scorecards.sort(key=lambda item: item.total_score, reverse=True)

@@ -19,7 +19,9 @@ def to_plain(value: Any) -> Any:
 def write_json(value: Any, path: str | Path) -> str:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(to_plain(value), ensure_ascii=False, indent=2), encoding="utf-8")
+    temp = target.with_suffix(f"{target.suffix}.tmp")
+    temp.write_text(json.dumps(to_plain(value), ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.replace(target)
     return str(target)
 
 

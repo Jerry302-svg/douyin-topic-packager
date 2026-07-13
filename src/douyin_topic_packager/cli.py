@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 from pathlib import Path
 
 from . import __version__
@@ -11,6 +12,7 @@ from .io_utils import read_json
 from .llm import LLMClient, load_dotenv
 from .packager import CONVERSION_MODE_INSTRUCTIONS
 from .pipeline import analyze_comments_step, collect_comments_step, collect_profile_step, run_topic_package_pipeline
+from .quality import evaluate_topic_run
 
 
 def _add_llm_args(parser: argparse.ArgumentParser) -> None:
@@ -72,12 +74,15 @@ def main() -> None:
     collect.add_argument("--top-n", type=int, default=20, help="采集数量，默认 Top20")
     collect.add_argument("--state", default="runtime/douyin_storage_state.json", help="Cookie 路径")
     collect.add_argument("--output-dir", default="outputs/topic_packages", help="输出目录")
+    collect.add_argument("--scan-pages", type=int, default=10, help="最多扫描多少页主页视频，再按评论数选 TopN")
 
     comments = subparsers.add_parser("comments", help="采集 Top 视频评论")
     comments.add_argument("--input", default="outputs/topic_packages/profile_videos.json", help="collect 生成的视频 JSON")
     comments.add_argument("--state", default="runtime/douyin_storage_state.json", help="Cookie 路径")
     comments.add_argument("--output-dir", default="outputs/topic_packages", help="输出目录")
     comments.add_argument("--max-comments-per-video", type=int, default=0, help="每条视频最多采集多少评论，0 表示不限")
+    comments.add_argument("--include-replies", action="store_true", help="同时采集评论回复")
+    comments.add_argument("--comment-concurrency", type=int, default=2, help="评论采集并发数，最多 5")
 
     analyze = subparsers.add_parser("analyze", help="根据评论生成痛点、角度和选题包")
     analyze.add_argument("--videos", default="outputs/topic_packages/profile_videos.json", help="视频 JSON")
@@ -91,6 +96,10 @@ def main() -> None:
     _add_conversion_args(analyze)
     _add_package_filter_args(analyze)
 
+    evaluate = subparsers.add_parser("evaluate", help="对已生成的选题 JSON 做离线质量检查")
+    evaluate.add_argument("--pain-signals", required=True, help="pain_signals.json 路径")
+    evaluate.add_argument("--topic-packages", required=True, help="topic_packages.json 路径")
+
     run = subparsers.add_parser("run", help="从主页分享链接直接生成选题包")
     run.add_argument("--profile-url", required=True, help="抖音博主主页分享链接或包含链接的整段分享文本")
     run.add_argument("--top-n", type=int, default=20, help="采集数量，默认 Top20")
@@ -98,6 +107,9 @@ def main() -> None:
     run.add_argument("--output-dir", default="outputs/topic_packages", help="输出目录")
     run.add_argument("--max-comments-per-video", type=int, default=0, help="每条视频最多采集多少评论，0 表示不限")
     run.add_argument("--resume", action="store_true", help="优先复用输出目录中已有 profile_videos.json/comments.json")
+    run.add_argument("--scan-pages", type=int, default=10, help="最多扫描多少页主页视频，再按评论数选 TopN")
+    run.add_argument("--include-replies", action="store_true", help="同时采集评论回复")
+    run.add_argument("--comment-concurrency", type=int, default=2, help="评论采集并发数，最多 5")
     _add_llm_args(run)
     _add_conversion_args(run)
     _add_package_filter_args(run)
@@ -122,6 +134,7 @@ def main() -> None:
                 output_dir=args.output_dir,
                 top_n=args.top_n,
                 storage_state_path=args.state,
+                scan_pages=args.scan_pages,
             )
         )
         _print_outputs(outputs)
@@ -134,9 +147,21 @@ def main() -> None:
                 output_dir=args.output_dir,
                 storage_state_path=args.state,
                 max_comments_per_video=args.max_comments_per_video,
+                include_replies=args.include_replies,
+                max_concurrency=args.comment_concurrency,
             )
         )
         _print_outputs(outputs)
+        return
+
+    if args.command == "evaluate":
+        result = evaluate_topic_run(
+            pain_signals=json.loads(Path(args.pain_signals).read_text(encoding="utf-8")),
+            topic_packages=json.loads(Path(args.topic_packages).read_text(encoding="utf-8")),
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if not result["passed"]:
+            raise SystemExit(1)
         return
 
     if args.command == "analyze":
@@ -173,6 +198,9 @@ def main() -> None:
                 package_limit=args.package_limit,
                 min_evidence_count=args.min_evidence_count,
                 resume=args.resume,
+                scan_pages=args.scan_pages,
+                include_replies=args.include_replies,
+                comment_concurrency=args.comment_concurrency,
             )
         )
         _print_outputs(outputs)

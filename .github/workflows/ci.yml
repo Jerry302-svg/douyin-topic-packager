@@ -32,3 +32,9 @@ jobs:
 
       - name: Compile sources
         run: python -m compileall -q src tests
+
+      - name: Lint maintained sources
+        run: python -m ruff check src/douyin_topic_packager tests
+
+      - name: Build distribution
+        run: python -m build

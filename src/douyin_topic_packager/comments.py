@@ -20,12 +20,15 @@ class CommentsCollector:
         max_comments: int = 0,
         page_size: int = 20,
         retry_delay: float = 1.0,
+        max_retries: int = 3,
     ):
         self.api_client = api_client
         self.include_replies = include_replies
         self.max_comments = max_comments
         self.page_size = max(1, page_size)
         self.retry_delay = retry_delay
+        self.max_retries = max(1, int(max_retries or 1))
+        self.last_error = ""
 
     async def collect(self, aweme_id: str) -> Optional[List[Dict[str, Any]]]:
         all_comments: List[Dict[str, Any]] = []
@@ -33,15 +36,24 @@ class CommentsCollector:
         seen_ids: set[str] = set()
 
         while True:
-            try:
-                page = await self.api_client.get_aweme_comments(
-                    aweme_id,
-                    cursor=cursor,
-                    count=self.page_size,
-                    include_replies=self.include_replies,
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"[WARN] Comments fetch error for {aweme_id} cursor={cursor}: {exc}")
+            page = None
+            for attempt in range(self.max_retries):
+                try:
+                    page = await self.api_client.get_aweme_comments(
+                        aweme_id,
+                        cursor=cursor,
+                        count=self.page_size,
+                        include_replies=self.include_replies,
+                    )
+                    self.last_error = ""
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    self.last_error = str(exc)
+                    if attempt >= self.max_retries - 1:
+                        print(f"[WARN] Comments fetch error for {aweme_id} cursor={cursor}: {exc}")
+                        return None
+                    await asyncio.sleep(self.retry_delay * (2**attempt))
+            if page is None:
                 return None
 
             items = page.get("items") or []

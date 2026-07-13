@@ -19,8 +19,15 @@ def render_topic_packages_markdown(
     min_fit_score: int = 0,
     package_limit: int = 0,
 ) -> str:
-    actionable_signals = [item for item in pain_signals if getattr(item, "evidence_level", "medium") != "weak"]
-    weak_signals = [item for item in pain_signals if getattr(item, "evidence_level", "medium") == "weak"]
+    actionable_signals = [
+        item
+        for item in pain_signals
+        if getattr(item, "signal_type", "audience_pain") == "audience_pain"
+        and getattr(item, "evidence_level", "medium") != "weak"
+    ]
+    weak_signals = [item for item in pain_signals if item not in actionable_signals]
+    publish_ready_packages = [item for item in topic_packages if item.confidence_level == "publish_ready"]
+    exploratory_packages = [item for item in topic_packages if item.confidence_level != "publish_ready"]
     lines: List[str] = [
         "# 抖音对标账号选题包",
         "",
@@ -40,16 +47,18 @@ def render_topic_packages_markdown(
         f"- 最小适配分：{max(0, int(min_fit_score or 0))}",
         f"- 选题包数量上限：{max(0, int(package_limit or 0)) or '不限制'}",
         "",
-        "## 推荐拍摄顺序",
+        "## 推荐拍摄顺序" if publish_ready_packages else "## 探索优先级（补证据后再拍）",
         "",
     ]
-    _append_shooting_order(lines, topic_packages)
+    _append_shooting_order(lines, publish_ready_packages or exploratory_packages)
 
-    lines.extend([
-        "## 一、可直接使用的选题包",
-        "",
-    ])
-    _append_topic_packages(lines, topic_packages)
+    if publish_ready_packages:
+        lines.extend(["## 一、可直接使用的选题包", ""])
+        _append_topic_packages(lines, publish_ready_packages)
+    if exploratory_packages:
+        lines.extend(["## 探索性选题（需补证据）", ""])
+        lines.extend(["这些选题当前主要来自弱证据或标题假设，补充真实评论或用户访谈后再决定拍摄。", ""])
+        _append_topic_packages(lines, exploratory_packages)
 
     lines.extend(["## 二、Top 视频信号", ""])
     for index, video in enumerate(videos, 1):
@@ -91,6 +100,11 @@ def render_topic_packages_markdown(
                 "",
             ]
         )
+        if scorecard.score_reasons:
+            lines.insert(
+                len(lines) - 1,
+                "- 评分依据：" + "；".join(f"{key}: {value}" for key, value in scorecard.score_reasons.items()),
+            )
 
     return "\n".join(lines).strip() + "\n"
 
@@ -105,6 +119,7 @@ def _append_topic_packages(lines: List[str], topic_packages: List[TopicPackage])
                 f"### {index}. {package.brief_title}",
                 "",
                 f"- 适配分：{package.fit_score}",
+                f"- 置信级别：{package.confidence_level}",
                 f"- 这条视频讲什么：{package.topic}",
                 f"- 痛点：{package.pain_point}",
                 f"- 目标用户：{package.target_audience}",
@@ -130,6 +145,10 @@ def _append_topic_packages(lines: List[str], topic_packages: List[TopicPackage])
         )
         for evidence in package.evidence[:6]:
             lines.append(f"  - {evidence}")
+        if package.quality_warnings:
+            lines.append("- 质量提醒：")
+            for warning in package.quality_warnings[:5]:
+                lines.append(f"  - {warning}")
         lines.append("- 风险提醒：")
         for risk in package.risk_notes[:5]:
             lines.append(f"  - {risk}")
@@ -149,6 +168,7 @@ def _append_pain_signals(lines: List[str], pain_signals: List[PainSignal]) -> No
                 f"- 证据数：{signal.evidence_count}",
                 f"- 信号强度：{signal.signal_strength}",
                 f"- 置信度：{signal.confidence}",
+                f"- 信号类型：{getattr(signal, 'signal_type', 'audience_pain')}",
                 "- 代表证据：",
             ]
         )

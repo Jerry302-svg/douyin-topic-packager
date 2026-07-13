@@ -20,6 +20,8 @@ def test_readme_documents_dev_test_flow():
     assert 'pip install -e ".[dev]"' in readme
     assert "python -m pytest -q" in readme
     assert "python -m compileall -q src tests" in readme
+    assert "python -m ruff check src/douyin_topic_packager tests" in readme
+    assert "python -m build" in readme
 
 
 def test_pyproject_declares_supported_python_classifiers():
@@ -40,4 +42,6 @@ def test_ci_workflow_runs_tests_and_compile_check():
     assert 'pip install -e ".[dev]"' in content
     assert "python -m pytest -q" in content
     assert "python -m compileall -q src tests" in content
+    assert "python -m ruff check src/douyin_topic_packager tests" in content
+    assert "python -m build" in content
     assert "playwright install" not in content

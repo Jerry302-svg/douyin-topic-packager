@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 from urllib import parse, request
+from urllib.error import HTTPError, URLError
 
 
 OPENAI_COMPATIBLE_PROVIDERS = {
@@ -87,6 +88,17 @@ class LLMConfig:
         )
 
 
+class LLMHTTPError(RuntimeError):
+    def __init__(self, status: int, detail: str, retry_after: float = 0.0):
+        super().__init__(f"HTTP {status}: {detail}")
+        self.status = status
+        self.retry_after = retry_after
+
+    @property
+    def retriable(self) -> bool:
+        return self.status == 429 or self.status >= 500
+
+
 class LLMClient:
     def __init__(
         self,
@@ -111,12 +123,23 @@ class LLMClient:
         last_error = ""
         for attempt in range(3):
             try:
-                return self._post(messages, temperature=temperature, max_tokens=max_tokens)
+                content = self._post(messages, temperature=temperature, max_tokens=max_tokens)
+                if not str(content or "").strip():
+                    raise RuntimeError("empty LLM content")
+                return content
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
-                if attempt < 2:
-                    time.sleep(2 * (attempt + 1))
+                if attempt >= 2 or not self._is_retriable(exc):
+                    break
+                retry_after = exc.retry_after if isinstance(exc, LLMHTTPError) else 0.0
+                time.sleep(max(retry_after, 2 * (attempt + 1)))
         raise RuntimeError(f"LLM 调用失败：{last_error}")
+
+    @staticmethod
+    def _is_retriable(exc: Exception) -> bool:
+        if isinstance(exc, LLMHTTPError):
+            return exc.retriable
+        return isinstance(exc, (URLError, TimeoutError, OSError)) or "empty LLM content" in str(exc)
 
     def _post(self, messages: List[Dict[str, str]], temperature: float, max_tokens: int) -> str:
         provider = self.config.normalized_provider
@@ -146,8 +169,17 @@ class LLMClient:
             headers=headers,
             method="POST",
         )
-        with request.urlopen(req, timeout=self.config.timeout) as resp:  # noqa: S310
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            with request.urlopen(req, timeout=self.config.timeout) as resp:  # noqa: S310
+                return json.loads(resp.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")[:300]
+            retry_after_raw = exc.headers.get("Retry-After", "0") if exc.headers else "0"
+            try:
+                retry_after = float(retry_after_raw)
+            except (TypeError, ValueError):
+                retry_after = 0.0
+            raise LLMHTTPError(exc.code, detail, retry_after=retry_after) from exc
 
     def _post_openai_compatible(
         self,
