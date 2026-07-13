@@ -13,6 +13,10 @@ UNSAFE_PHRASES = (
 )
 
 
+def _normalized_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
 def evaluate_topic_run(
     *,
     pain_signals: Iterable[Dict[str, Any]],
@@ -26,6 +30,7 @@ def evaluate_topic_run(
     evidence_grounded = 0
     unsafe_count = 0
     unknown_pain_count = 0
+    long_title_count = 0
     for package in packages:
         pain = str(package.get("pain_point") or "")
         if pain not in known_pains:
@@ -33,8 +38,9 @@ def evaluate_topic_run(
         refs = package.get("evidence_refs") or []
         evidence = package.get("evidence") or []
         evidence_total += len(evidence)
-        ref_texts = {str(ref.get("text") or "").strip() for ref in refs if isinstance(ref, dict)}
-        evidence_grounded += sum(1 for item in evidence if str(item).strip() in ref_texts)
+        ref_texts = {_normalized_text(ref.get("text")) for ref in refs if isinstance(ref, dict)}
+        evidence_grounded += sum(1 for item in evidence if _normalized_text(item) in ref_texts)
+        long_title_count += int(len(_normalized_text(package.get("brief_title"))) > 36)
         searchable = " ".join(
             str(package.get(key) or "")
             for key in ("proof_needed", "cta_direction", "comment_cta", "production_suggestions")
@@ -46,6 +52,7 @@ def evaluate_topic_run(
         "all_evidence_grounded": grounded_rate == 1.0,
         "all_pains_known": unknown_pain_count == 0,
         "no_unsafe_instructions": unsafe_count == 0,
+        "titles_are_concise": long_title_count == 0,
         "packages_generated": bool(packages),
     }
     return {
@@ -55,6 +62,7 @@ def evaluate_topic_run(
             "grounded_evidence_rate": grounded_rate,
             "unknown_pain_count": unknown_pain_count,
             "unsafe_instruction_count": unsafe_count,
+            "long_title_count": long_title_count,
             "package_count": len(packages),
             "publish_ready_count": len(
                 [item for item in packages if item.get("confidence_level") == "publish_ready"]

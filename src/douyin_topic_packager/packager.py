@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List
 
@@ -33,6 +34,20 @@ def normalize_conversion_mode(value: str | None) -> str:
 
 def _text(value: Any) -> str:
     return " ".join(str(value or "").replace("\n", " ").split()).strip()
+
+
+def _concise_title(value: Any, max_length: int = 32) -> str:
+    text = _text(value)
+    if len(text) <= max_length:
+        return text
+    boundaries = [
+        match.end()
+        for match in re.finditer(r"[。！？!?；;，,]", text[: max_length + 1])
+        if match.end() >= 14
+    ]
+    if boundaries:
+        return text[: boundaries[-1]].rstrip("。；;，, ")
+    return f"{text[: max_length - 1].rstrip()}…"
 
 
 def _fit_score(value: Any, default: int = 78) -> int:
@@ -137,6 +152,7 @@ def build_topic_package_messages(
         "The pain_point field must be a concise human-readable pain summary, not a copied title, hashtag, or raw comment. "
         "Never request fabricated cases, fake amounts, fake screenshots, or invented proof. "
         "Do not offer individual legal, medical, or financial diagnosis in a CTA."
+        " Keep brief_title within 14-28 Chinese characters and do not concatenate the full pain and angle."
         f" {CONVERSION_MODE_INSTRUCTIONS[conversion_mode]}"
     )
     user_prompt = (
@@ -205,9 +221,13 @@ def _ground_evidence(requested: Iterable[Any], signal: PainSignal) -> tuple[List
             for value in requested_values
         ):
             continue
-        grounded_refs.append(dict(ref))
+        grounded_refs.append({**dict(ref), "text": source_text})
     if not grounded_refs:
-        grounded_refs = [dict(ref) for ref in refs if _text(ref.get("text"))][:6]
+        grounded_refs = [
+            {**dict(ref), "text": _text(ref.get("text"))}
+            for ref in refs
+            if _text(ref.get("text"))
+        ][:6]
     evidence = [_text(ref.get("text")) for ref in grounded_refs if _text(ref.get("text"))]
     return evidence[:8], grounded_refs[:8]
 
@@ -264,7 +284,7 @@ def normalize_llm_topic_packages(
         evidence_clean, evidence_refs = _ground_evidence(evidence, signal)
         normalized.append(
             TopicPackage(
-                brief_title=title[:80],
+                brief_title=_concise_title(title),
                 topic=_text(item.get("topic") or angle or title),
                 pain_point=pain,
                 evidence=evidence_clean,
@@ -312,10 +332,15 @@ def audit_topic_packages(
     signal_by_pain = {item.pain_point: item for item in pain_signals if item.pain_point}
     score_by_angle = {item.angle: item for item in scorecards}
     accepted: List[TopicPackage] = []
+    accepted_pain_counts: Dict[str, int] = {}
     for package in packages:
         signal = signal_by_pain.get(package.pain_point)
         if signal is None:
             continue
+        max_per_pain = 2 if _signal_is_actionable(signal) else 1
+        if accepted_pain_counts.get(package.pain_point, 0) >= max_per_pain:
+            continue
+        package.brief_title = _concise_title(package.brief_title or package.topic)
         warnings = list(package.quality_warnings)
         grounded_evidence, grounded_refs = _ground_evidence(package.evidence, signal)
         if package.evidence != grounded_evidence:
@@ -370,6 +395,7 @@ def audit_topic_packages(
             },
         }
         accepted.append(package)
+        accepted_pain_counts[package.pain_point] = accepted_pain_counts.get(package.pain_point, 0) + 1
     accepted.sort(key=lambda item: item.fit_score, reverse=True)
     return accepted
 
@@ -392,7 +418,7 @@ def fallback_topic_packages(
             continue
         packages.append(
             TopicPackage(
-                brief_title=candidate.angle[:60],
+                brief_title=_concise_title(candidate.angle),
                 topic=candidate.angle,
                 pain_point=candidate.pain_point,
                 evidence=signal.evidence[:6],

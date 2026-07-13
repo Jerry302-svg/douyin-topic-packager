@@ -202,3 +202,56 @@ def test_offline_quality_gate_rejects_ungrounded_or_unsafe_packages():
     assert result["passed"] is False
     assert result["metrics"]["grounded_evidence_rate"] == 0.0
     assert result["metrics"]["unsafe_instruction_count"] >= 1
+
+
+def test_grounded_evidence_normalizes_whitespace_in_text_and_reference():
+    signal = _grounded_signal()
+    signal.evidence = ["标题里有  两个空格"]
+    signal.evidence_refs[0]["text"] = "标题里有  两个空格"
+    raw = json.dumps(
+        {
+            "topic_packages": [
+                {
+                    "brief_title": "空格归一化检查",
+                    "topic": "检查证据",
+                    "pain_point": signal.pain_point,
+                    "evidence": ["标题里有 两个空格"],
+                    "recommended_angle": "解释判断方法",
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    package = normalize_llm_topic_packages(raw, [signal])[0]
+    result = evaluate_topic_run(
+        pain_signals=[signal.to_dict()],
+        topic_packages=[package.to_dict()],
+    )
+
+    assert package.evidence == ["标题里有 两个空格"]
+    assert package.evidence_refs[0]["text"] == package.evidence[0]
+    assert result["checks"]["all_evidence_grounded"] is True
+
+
+def test_audit_limits_exploratory_duplicate_pains_and_compacts_titles():
+    signal = _grounded_signal(level="weak")
+    packages = [
+        _package(
+            brief_title="这是一个把完整痛点和完整角度全部拼接在一起导致特别冗长而且无法直接用于封面的标题",
+            evidence=signal.evidence,
+            evidence_refs=signal.evidence_refs,
+            fit_score=90,
+        ),
+        _package(
+            brief_title="同一痛点的第二个探索性角度不应挤占有限报告位置",
+            evidence=signal.evidence,
+            evidence_refs=signal.evidence_refs,
+            fit_score=80,
+        ),
+    ]
+
+    audited = audit_topic_packages(packages, [signal], [])
+
+    assert len(audited) == 1
+    assert len(audited[0].brief_title) <= 32

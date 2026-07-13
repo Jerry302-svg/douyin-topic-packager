@@ -42,3 +42,7 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/douyin/xbogus.py" = ["E741"]
+"src/douyin/utils/xbogus.py" = ["E741"]
