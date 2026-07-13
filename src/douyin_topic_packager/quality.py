@@ -11,6 +11,7 @@ UNSAFE_PHRASES = (
     "报出你的金额",
     "留下你的金额",
 )
+GENERIC_AUDIENCES = {"", "目标用户", "相关用户", "当前选题对应的目标用户"}
 
 
 def _normalized_text(value: Any) -> str:
@@ -31,6 +32,7 @@ def evaluate_topic_run(
     unsafe_count = 0
     unknown_pain_count = 0
     long_title_count = 0
+    generic_audience_count = 0
     for package in packages:
         pain = str(package.get("pain_point") or "")
         if pain not in known_pains:
@@ -41,6 +43,7 @@ def evaluate_topic_run(
         ref_texts = {_normalized_text(ref.get("text")) for ref in refs if isinstance(ref, dict)}
         evidence_grounded += sum(1 for item in evidence if _normalized_text(item) in ref_texts)
         long_title_count += int(len(_normalized_text(package.get("brief_title"))) > 36)
+        generic_audience_count += int(_normalized_text(package.get("target_audience")) in GENERIC_AUDIENCES)
         searchable = " ".join(
             str(package.get(key) or "")
             for key in ("proof_needed", "cta_direction", "comment_cta", "production_suggestions")
@@ -53,6 +56,7 @@ def evaluate_topic_run(
         "all_pains_known": unknown_pain_count == 0,
         "no_unsafe_instructions": unsafe_count == 0,
         "titles_are_concise": long_title_count == 0,
+        "audiences_are_specific": generic_audience_count == 0,
         "packages_generated": bool(packages),
     }
     return {
@@ -63,6 +67,7 @@ def evaluate_topic_run(
             "unknown_pain_count": unknown_pain_count,
             "unsafe_instruction_count": unsafe_count,
             "long_title_count": long_title_count,
+            "generic_audience_count": generic_audience_count,
             "package_count": len(packages),
             "publish_ready_count": len(
                 [item for item in packages if item.get("confidence_level") == "publish_ready"]

@@ -385,6 +385,24 @@ def audit_topic_packages(
         package.confidence_level = "publish_ready" if _signal_is_actionable(signal) else "exploratory"
         if package.confidence_level == "exploratory":
             warnings.append("当前主要是弱证据或标题假设，只能作为探索性选题。")
+            source_label = "真实用户评论" if signal.signal_type == "audience_pain" else "原视频标题"
+            package.why_worth_shooting = (
+                f"{source_label}中出现了这个方向，但当前只有 {signal.evidence_count} 条证据；"
+                "适合先补充评论、访谈或搜索反馈，再决定是否进入正式拍摄。"
+            )
+            if package.target_audience in {"", "目标用户", "相关用户", "当前选题对应的目标用户"}:
+                package.target_audience = (
+                    f"可能关注“{_concise_title(package.pain_point, max_length=24)}”的人，"
+                    "具体场景仍需进一步验证"
+                )
+            if signal.signal_type == "content_hypothesis":
+                package.production_suggestions = [
+                    item for item in package.production_suggestions if "评论痛点" not in item
+                ]
+                package.production_suggestions.extend(
+                    ["用原视频标题中的问题开头", "发布前补充真实评论或用户访谈"]
+                )
+                package.production_suggestions = list(dict.fromkeys(package.production_suggestions))[:6]
         package.quality_warnings = list(dict.fromkeys(warnings))
         package.metadata = {
             **(package.metadata or {}),

@@ -255,3 +255,27 @@ def test_audit_limits_exploratory_duplicate_pains_and_compacts_titles():
 
     assert len(audited) == 1
     assert len(audited[0].brief_title) <= 32
+
+
+def test_audit_makes_exploratory_title_hypothesis_transparent():
+    signal = _grounded_signal(level="weak")
+    signal.signal_type = "content_hypothesis"
+    package = _package(
+        target_audience="当前选题对应的目标用户",
+        why_worth_shooting="适合直接拍摄",
+        production_suggestions=["适合口播", "用评论痛点开头"],
+        evidence=signal.evidence,
+        evidence_refs=signal.evidence_refs,
+    )
+
+    audited = audit_topic_packages([package], [signal], [])
+    result = evaluate_topic_run(
+        pain_signals=[signal.to_dict()],
+        topic_packages=[audited[0].to_dict()],
+    )
+
+    assert "先补充评论、访谈或搜索反馈" in audited[0].why_worth_shooting
+    assert "具体场景仍需进一步验证" in audited[0].target_audience
+    assert "用评论痛点开头" not in audited[0].production_suggestions
+    assert "用原视频标题中的问题开头" in audited[0].production_suggestions
+    assert result["checks"]["audiences_are_specific"] is True
