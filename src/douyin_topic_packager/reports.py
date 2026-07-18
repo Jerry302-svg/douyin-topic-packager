@@ -22,12 +22,12 @@ def render_topic_packages_markdown(
     actionable_signals = [
         item
         for item in pain_signals
-        if getattr(item, "signal_type", "audience_pain") == "audience_pain"
-        and getattr(item, "evidence_level", "medium") != "weak"
+        if getattr(item, "is_actionable", False)
     ]
     weak_signals = [item for item in pain_signals if item not in actionable_signals]
     publish_ready_packages = [item for item in topic_packages if item.confidence_level == "publish_ready"]
-    exploratory_packages = [item for item in topic_packages if item.confidence_level != "publish_ready"]
+    review_required_packages = [item for item in topic_packages if item.confidence_level == "review_required"]
+    exploratory_packages = [item for item in topic_packages if item.confidence_level == "exploratory"]
     lines: List[str] = [
         "# 抖音对标账号选题包",
         "",
@@ -41,20 +41,30 @@ def render_topic_packages_markdown(
         f"- 痛点信号：{len(pain_signals)} 个",
         f"- 高可信痛点：{len(actionable_signals)} 个",
         f"- 弱证据观察：{len(weak_signals)} 个",
+        f"- 多用户支持信号：{len([item for item in pain_signals if item.unique_user_count >= 2])} 个",
+        f"- 跨视频支持信号：{len([item for item in pain_signals if item.unique_video_count >= 2])} 个",
         f"- 角度评分：{len(scorecards)} 个",
         f"- 选题包：{len(topic_packages)} 个",
         f"- 最小证据数：{max(0, int(min_evidence_count or 0))}",
         f"- 最小适配分：{max(0, int(min_fit_score or 0))}",
         f"- 选题包数量上限：{max(0, int(package_limit or 0)) or '不限制'}",
         "",
-        "## 推荐拍摄顺序" if publish_ready_packages else "## 探索优先级（补证据后再拍）",
+        "## 推荐拍摄顺序"
+        if publish_ready_packages
+        else "## 核验优先级（审核后再拍）"
+        if review_required_packages
+        else "## 探索优先级（补证据后再拍）",
         "",
     ]
-    _append_shooting_order(lines, publish_ready_packages or exploratory_packages)
+    _append_shooting_order(lines, publish_ready_packages or review_required_packages or exploratory_packages)
 
     if publish_ready_packages:
         lines.extend(["## 一、可直接使用的选题包", ""])
         _append_topic_packages(lines, publish_ready_packages)
+    if review_required_packages:
+        lines.extend(["## 待核验选题（核验后再发布）", ""])
+        lines.extend(["这些选题涉及高风险事实或标题假设，需要公开来源、对应领域审核或人工复核。", ""])
+        _append_topic_packages(lines, review_required_packages)
     if exploratory_packages:
         lines.extend(["## 探索性选题（需补证据）", ""])
         lines.extend(["这些选题当前主要来自弱证据或标题假设，补充真实评论或用户访谈后再决定拍摄。", ""])
@@ -120,6 +130,9 @@ def _append_topic_packages(lines: List[str], topic_packages: List[TopicPackage])
                 "",
                 f"- 适配分：{package.fit_score}",
                 f"- 置信级别：{package.confidence_level}",
+                f"- 事实状态：{package.claim_status}",
+                f"- 外部核验：{'需要' if package.external_verification_required else '不需要'}",
+                f"- 新颖度：{package.novelty_score}",
                 f"- 这条视频讲什么：{package.topic}",
                 f"- 痛点：{package.pain_point}",
                 f"- 目标用户：{package.target_audience}",
@@ -138,6 +151,18 @@ def _append_topic_packages(lines: List[str], topic_packages: List[TopicPackage])
             lines.append(f"  - 结构：{outline}")
         for note in (package.material_notes or [])[:4]:
             lines.append(f"  - 素材：{note}")
+        if package.performance_calibration:
+            lines.append(
+                "- 效果校准："
+                + "；".join(f"{key}={value}" for key, value in package.performance_calibration.items())
+            )
+        if package.experiment_variants:
+            lines.append("- A/B 实验：")
+            for experiment in package.experiment_variants[:2]:
+                lines.append(
+                    f"  - {experiment.get('variant')}：{experiment.get('hook')} "
+                    f"（观察 {experiment.get('primary_metric')}）"
+                )
         lines.extend(
             [
                 "- 证据：",
@@ -166,6 +191,9 @@ def _append_pain_signals(lines: List[str], pain_signals: List[PainSignal]) -> No
                 "",
                 f"- 证据等级：{getattr(signal, 'evidence_level', 'medium')}",
                 f"- 证据数：{signal.evidence_count}",
+                f"- 独立用户：{signal.unique_user_count}",
+                f"- 涉及视频：{signal.unique_video_count}",
+                f"- 重复证据：{signal.duplicate_evidence_count}",
                 f"- 信号强度：{signal.signal_strength}",
                 f"- 置信度：{signal.confidence}",
                 f"- 信号类型：{getattr(signal, 'signal_type', 'audience_pain')}",

@@ -35,7 +35,36 @@ UNSAFE_CTA_PHRASES = (
     "留下你的金额",
     "金额区间",
     "留下发现日期",
+    "我帮你归",
+    "帮你先归",
+    "我帮你先归",
+    "我帮你定位",
+    "帮你定位",
 )
+
+HIGH_STAKES_TERMS = (
+    "法律",
+    "法院",
+    "合同",
+    "违约金",
+    "退款",
+    "医疗",
+    "诊断",
+    "药",
+    "贷款",
+    "投资",
+    "理财",
+    "税",
+    "退费",
+    "追回",
+    "维权",
+    "取证",
+    "证据链",
+    "自愿打赏",
+    "诱导打赏",
+)
+
+ABSOLUTE_CLAIM_TERMS = ("一定", "保证", "百分百", "肯定能", "绝对", "无需核实")
 
 
 def normalize_conversion_mode(value: str | None) -> str:
@@ -115,6 +144,57 @@ def _script_outline(pain_point: str, angle: str) -> List[str]:
         f"中段拆判断：{angle_text}",
         "结尾给动作：让用户留下具体阶段或场景",
     ]
+
+
+def _experiment_variants(package: TopicPackage) -> List[Dict[str, Any]]:
+    pain = _text(package.pain_point)[:24] or "这个问题"
+    return [
+        {
+            "variant": "A",
+            "hook": package.first_three_seconds or package.opening_hook,
+            "hypothesis": "直接点出痛点能提高前三秒停留。",
+            "primary_metric": "three_second_rate",
+        },
+        {
+            "variant": "B",
+            "hook": f"很多人遇到「{pain}」时，第一步就判断错了。",
+            "hypothesis": "误区式开头能提高完播和评论意愿。",
+            "primary_metric": "completion_rate",
+        },
+    ]
+
+
+def _claim_status(package: TopicPackage, signal: PainSignal) -> tuple[str, bool, List[str]]:
+    searchable = _package_risk_text(package, signal)
+    high_stakes = _is_high_stakes(package, signal)
+    absolute = any(term in searchable for term in ABSOLUTE_CLAIM_TERMS)
+    if absolute:
+        return "unsafe", True, ["检测到绝对化或保证性表达，发布前必须重写并人工复核。"]
+    if high_stakes or signal.signal_type == "content_hypothesis":
+        return "needs_external_verification", True, ["涉及高风险事实或标题假设，需要公开来源或专业审核。"]
+    if _signal_is_actionable(signal):
+        return "supported", False, []
+    return "needs_more_audience_evidence", False, ["用户证据不足，建议先补评论、访谈或搜索反馈。"]
+
+
+def _package_risk_text(package: TopicPackage, signal: PainSignal) -> str:
+    return " ".join(
+        [
+            package.brief_title,
+            package.topic,
+            package.pain_point,
+            package.recommended_angle,
+            package.proof_needed,
+            *package.script_outline,
+            *signal.source_titles,
+            *signal.evidence,
+        ]
+    )
+
+
+def _is_high_stakes(package: TopicPackage, signal: PainSignal) -> bool:
+    searchable = _package_risk_text(package, signal)
+    return any(term in searchable for term in HIGH_STAKES_TERMS)
 
 
 def _material_notes(evidence: Iterable[Any]) -> List[str]:
@@ -415,6 +495,9 @@ def audit_topic_packages(
     """Ground, de-duplicate and safety-check packages before they reach reports."""
     signal_by_pain = {item.pain_point: item for item in pain_signals if item.pain_point}
     score_by_angle = {item.angle: item for item in scorecards}
+    scores_by_pain: Dict[str, List[ValidationScorecard]] = {}
+    for item in scorecards:
+        scores_by_pain.setdefault(item.pain_point, []).append(item)
     accepted: List[TopicPackage] = []
     accepted_pain_counts: Dict[str, int] = {}
     for package in packages:
@@ -442,6 +525,8 @@ def audit_topic_packages(
             [package.cta_direction, package.comment_cta, *package.script_outline]
         )
         unsafe_cta = any(phrase in cta_text for phrase in UNSAFE_CTA_PHRASES)
+        if _is_high_stakes(package, signal) and "我帮你" in cta_text:
+            unsafe_cta = True
         if unsafe_cta:
             package.cta_direction = _fallback_cta(package.pain_point, conversion_mode)
             package.comment_cta = package.cta_direction
@@ -477,10 +562,27 @@ def audit_topic_packages(
             continue
 
         scorecard = score_by_angle.get(package.recommended_angle)
+        if scorecard is None:
+            pain_scores = scores_by_pain.get(package.pain_point) or []
+            if pain_scores:
+                scorecard = pain_scores[min(accepted_pain_counts.get(package.pain_point, 0), len(pain_scores) - 1)]
         deterministic_score = scorecard.total_score if scorecard else signal.signal_strength
         package.fit_score = int(round(package.fit_score * 0.7 + deterministic_score * 0.3))
-        package.confidence_level = "publish_ready" if _signal_is_actionable(signal) else "exploratory"
-        if package.confidence_level == "exploratory":
+        package.novelty_score = int((scorecard.scores if scorecard else {}).get("novelty") or 0)
+        package.claim_status, package.external_verification_required, claim_warnings = _claim_status(package, signal)
+        warnings.extend(claim_warnings)
+        package.confidence_level = (
+            "publish_ready"
+            if _signal_is_actionable(signal) and not package.external_verification_required
+            else "review_required"
+            if package.external_verification_required
+            else "exploratory"
+        )
+        package.experiment_variants = _experiment_variants(package)
+        if package.confidence_level == "exploratory" or (
+            package.confidence_level == "review_required"
+            and (signal.signal_type == "content_hypothesis" or not _signal_is_actionable(signal))
+        ):
             warnings.append("当前主要是弱证据或标题假设，只能作为探索性选题。")
             source_label = "真实用户评论" if signal.signal_type == "audience_pain" else "原视频标题"
             package.why_worth_shooting = (
@@ -500,12 +602,20 @@ def audit_topic_packages(
                     ["用原视频标题中的问题开头", "发布前补充真实评论或用户访谈"]
                 )
                 package.production_suggestions = list(dict.fromkeys(package.production_suggestions))[:6]
+        elif package.confidence_level == "review_required":
+            package.why_worth_shooting = (
+                f"已有 {signal.unique_user_count or signal.evidence_count} 位独立用户、"
+                f"{signal.unique_video_count or len(signal.source_video_ids)} 条视频提供需求证据；"
+                "需求可以成立，但高风险领域的事实判断必须补公开来源和专业审核后再发布。"
+            )
         package.quality_warnings = list(dict.fromkeys(warnings))
         package.metadata = {
             **(package.metadata or {}),
             "audit": {
                 "grounded": True,
                 "confidence_level": package.confidence_level,
+                "claim_status": package.claim_status,
+                "external_verification_required": package.external_verification_required,
                 "warning_count": len(package.quality_warnings),
             },
         }

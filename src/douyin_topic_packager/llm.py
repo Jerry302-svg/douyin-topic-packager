@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import time
@@ -116,24 +117,75 @@ class LLMClient:
             base_url=base_url or env_config.base_url,
             timeout=timeout if timeout is not None else env_config.timeout,
         )
+        self._metrics: Dict[str, Any] = {
+            "calls": 0,
+            "successful_calls": 0,
+            "failed_calls": 0,
+            "retries": 0,
+            "total_latency_ms": 0,
+            "prompt_characters": 0,
+            "response_characters": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "request_fingerprints": [],
+        }
 
     def complete(self, messages: List[Dict[str, str]], temperature: float = 0.3, max_tokens: int = 5000) -> str:
         if not self.config.is_configured:
             raise RuntimeError("LLM 未配置，请设置 LLM_PROVIDER、LLM_MODEL、LLM_API_KEY")
         last_error = ""
+        started = time.perf_counter()
+        self._metrics["calls"] += 1
+        self._metrics["prompt_characters"] += sum(len(str(item.get("content") or "")) for item in messages)
+        fingerprint = hashlib.sha256(
+            json.dumps(messages, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:16]
+        self._metrics["request_fingerprints"].append(fingerprint)
         for attempt in range(3):
             try:
                 content = self._post(messages, temperature=temperature, max_tokens=max_tokens)
                 if not str(content or "").strip():
                     raise RuntimeError("empty LLM content")
+                self._metrics["successful_calls"] += 1
+                self._metrics["response_characters"] += len(content)
+                self._metrics["total_latency_ms"] += int((time.perf_counter() - started) * 1000)
                 return content
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
                 if attempt >= 2 or not self._is_retriable(exc):
                     break
+                self._metrics["retries"] += 1
                 retry_after = exc.retry_after if isinstance(exc, LLMHTTPError) else 0.0
                 time.sleep(max(retry_after, 2 * (attempt + 1)))
+        self._metrics["failed_calls"] += 1
+        self._metrics["total_latency_ms"] += int((time.perf_counter() - started) * 1000)
         raise RuntimeError(f"LLM 调用失败：{last_error}")
+
+    def snapshot_metrics(self) -> Dict[str, Any]:
+        metrics = dict(self._metrics)
+        metrics["request_fingerprints"] = list(dict.fromkeys(metrics["request_fingerprints"]))[-20:]
+        calls = int(metrics.get("calls") or 0)
+        metrics["average_latency_ms"] = round(int(metrics.get("total_latency_ms") or 0) / calls, 1) if calls else 0.0
+        return metrics
+
+    def _record_usage(self, provider: str, data: Dict[str, Any]) -> None:
+        if provider == "anthropic":
+            usage = data.get("usage") or {}
+            input_tokens = usage.get("input_tokens") or 0
+            output_tokens = usage.get("output_tokens") or 0
+        elif provider == "gemini":
+            usage = data.get("usageMetadata") or {}
+            input_tokens = usage.get("promptTokenCount") or 0
+            output_tokens = usage.get("candidatesTokenCount") or 0
+        else:
+            usage = data.get("usage") or {}
+            input_tokens = usage.get("prompt_tokens") or 0
+            output_tokens = usage.get("completion_tokens") or 0
+        try:
+            self._metrics["input_tokens"] += int(input_tokens or 0)
+            self._metrics["output_tokens"] += int(output_tokens or 0)
+        except (TypeError, ValueError):
+            return
 
     @staticmethod
     def _is_retriable(exc: Exception) -> bool:
@@ -208,6 +260,7 @@ class LLMClient:
             },
             payload,
         )
+        self._record_usage(provider, data)
         return str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
 
     def _post_anthropic(self, messages: List[Dict[str, str]], temperature: float, max_tokens: int) -> str:
@@ -237,6 +290,7 @@ class LLMClient:
             },
             payload,
         )
+        self._record_usage("anthropic", data)
         parts = data.get("content") or []
         return "\n".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
 
@@ -259,6 +313,7 @@ class LLMClient:
             {"Content-Type": "application/json"},
             {"contents": contents, "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens}},
         )
+        self._record_usage("gemini", data)
         candidates = data.get("candidates") or []
         content = ((candidates[0] if candidates else {}).get("content") or {}).get("parts") or []
         return "\n".join(str(part.get("text") or "") for part in content if isinstance(part, dict))

@@ -47,6 +47,15 @@ def _add_package_filter_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--min-fit-score", type=int, default=0, help="只保留适配分不低于该值的选题包，0 表示不筛选")
     parser.add_argument("--package-limit", type=int, default=0, help="最多输出多少个选题包，0 表示不限制")
     parser.add_argument("--min-evidence-count", type=int, default=0, help="只保留证据数不低于该值的痛点信号，0 表示不筛选")
+    parser.add_argument("--performance-feedback", default="", help="可选历史发布指标 JSON，用于校准选题适配分")
+
+
+def _add_comment_quality_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--target-valid-comments", type=int, default=0, help="每条视频达到多少条有效问题评论后停止，0 表示不启用")
+    parser.add_argument("--max-comment-pages", type=int, default=0, help="每条视频最多扫描评论页数，0 表示由接口自然结束")
+    parser.add_argument("--saturation-pages", type=int, default=3, help="连续多少页缺少新有效信号后停止")
+    parser.add_argument("--saturation-min-new-ratio", type=float, default=0.08, help="判定信号饱和的单页新有效评论比例")
+    parser.add_argument("--keep-user-data", action="store_true", help="保留昵称和 IP 属地；默认会脱敏，公开分享时不建议启用")
 
 
 def _print_outputs(outputs: dict) -> None:
@@ -83,6 +92,7 @@ def main() -> None:
     comments.add_argument("--max-comments-per-video", type=int, default=0, help="每条视频最多采集多少评论，0 表示不限")
     comments.add_argument("--include-replies", action="store_true", help="同时采集评论回复")
     comments.add_argument("--comment-concurrency", type=int, default=2, help="评论采集并发数，最多 5")
+    _add_comment_quality_args(comments)
 
     analyze = subparsers.add_parser("analyze", help="根据评论生成痛点、角度和选题包")
     analyze.add_argument("--videos", default="outputs/topic_packages/profile_videos.json", help="视频 JSON")
@@ -116,6 +126,7 @@ def main() -> None:
     run.add_argument("--scan-pages", type=int, default=10, help="最多扫描多少页主页视频，再按评论数选 TopN")
     run.add_argument("--include-replies", action="store_true", help="同时采集评论回复")
     run.add_argument("--comment-concurrency", type=int, default=2, help="评论采集并发数，最多 5")
+    _add_comment_quality_args(run)
     _add_llm_args(run)
     _add_conversion_args(run)
     _add_package_filter_args(run)
@@ -155,6 +166,11 @@ def main() -> None:
                 max_comments_per_video=args.max_comments_per_video,
                 include_replies=args.include_replies,
                 max_concurrency=args.comment_concurrency,
+                target_valid_comments=args.target_valid_comments,
+                max_comment_pages=args.max_comment_pages,
+                saturation_pages=args.saturation_pages,
+                saturation_min_new_ratio=args.saturation_min_new_ratio,
+                redact_user_data=not args.keep_user_data,
             )
         )
         _print_outputs(outputs)
@@ -187,6 +203,7 @@ def main() -> None:
             min_fit_score=args.min_fit_score,
             package_limit=args.package_limit,
             min_evidence_count=args.min_evidence_count,
+            performance_feedback_path=args.performance_feedback,
         )
         _print_outputs(outputs)
         return
@@ -208,6 +225,12 @@ def main() -> None:
                 scan_pages=args.scan_pages,
                 include_replies=args.include_replies,
                 comment_concurrency=args.comment_concurrency,
+                target_valid_comments=args.target_valid_comments,
+                max_comment_pages=args.max_comment_pages,
+                saturation_pages=args.saturation_pages,
+                saturation_min_new_ratio=args.saturation_min_new_ratio,
+                redact_user_data=not args.keep_user_data,
+                performance_feedback_path=args.performance_feedback,
             )
         )
         _print_outputs(outputs)

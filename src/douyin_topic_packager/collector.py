@@ -10,7 +10,9 @@ from douyin.core.api_client import DouyinAPIClient
 
 from .comments import CommentsCollector
 from .cookies import load_cookies_from_storage_state
+from .privacy import sanitize_comment, stable_user_hash
 from .schemas import CommentItem, VideoItem
+from .signals import is_meaningful_comment
 
 
 URL_RE = re.compile(r"https?://[^\s，。、“”\"'<>]+")
@@ -139,9 +141,9 @@ async def collect_profile_pages(
     return items
 
 
-def normalize_comment(aweme_id: str, item: Dict[str, Any]) -> CommentItem:
+def normalize_comment(aweme_id: str, item: Dict[str, Any], *, redact_user_data: bool = True) -> CommentItem:
     user = item.get("user") or {}
-    return CommentItem(
+    comment = CommentItem(
         aweme_id=aweme_id,
         cid=str(item.get("cid") or item.get("comment_id") or ""),
         text=str(item.get("text") or item.get("content") or "").strip(),
@@ -151,8 +153,15 @@ def normalize_comment(aweme_id: str, item: Dict[str, Any]) -> CommentItem:
         metadata={
             "reply_comment_total": _safe_int(item.get("reply_comment_total")),
             "ip_label": item.get("ip_label") or "",
+            "user_hash": stable_user_hash(
+                user.get("uid"),
+                user.get("sec_uid"),
+                user.get("unique_id"),
+                user.get("nickname"),
+            ),
         },
     )
+    return sanitize_comment(comment) if redact_user_data else comment
 
 
 async def collect_comments_for_videos(
@@ -164,6 +173,11 @@ async def collect_comments_for_videos(
     include_replies: bool = False,
     max_concurrency: int = 2,
     max_retries: int = 3,
+    target_valid_comments: int = 0,
+    max_comment_pages: int = 0,
+    saturation_pages: int = 3,
+    saturation_min_new_ratio: float = 0.08,
+    redact_user_data: bool = True,
     progress_callback=None,
     return_status: bool = False,
 ) -> List[CommentItem] | tuple[List[CommentItem], Dict[str, Dict[str, Any]]]:
@@ -181,6 +195,11 @@ async def collect_comments_for_videos(
                 max_comments=max_comments_per_video,
                 page_size=page_size,
                 max_retries=max_retries,
+                target_valid_comments=target_valid_comments,
+                max_pages=max_comment_pages,
+                saturation_pages=saturation_pages,
+                saturation_min_new_ratio=saturation_min_new_ratio,
+                quality_predicate=is_meaningful_comment,
             )
             async with semaphore:
                 raw_result = await collector.collect(video.aweme_id)
@@ -189,13 +208,14 @@ async def collect_comments_for_videos(
             for item in raw_items:
                 if not isinstance(item, dict):
                     continue
-                comment = normalize_comment(video.aweme_id, item)
+                comment = normalize_comment(video.aweme_id, item, redact_user_data=redact_user_data)
                 if comment.text:
                     normalized.append(comment)
             status = {
                 "status": "success" if raw_result is not None else "failed",
                 "comment_count": len(normalized),
                 "error": collector.last_error,
+                **collector.stats,
             }
             return index, video.aweme_id, normalized, status
 

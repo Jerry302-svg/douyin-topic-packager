@@ -49,6 +49,10 @@ class PainSignal:
     evidence_level: str = "medium"
     signal_type: str = "audience_pain"
     is_actionable: bool = False
+    unique_user_count: int = 0
+    unique_video_count: int = 0
+    duplicate_evidence_count: int = 0
+    semantic_variants: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -105,6 +109,11 @@ class TopicPackage:
     confidence_level: str = "exploratory"
     quality_warnings: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    claim_status: str = "needs_verification"
+    external_verification_required: bool = False
+    novelty_score: int = 0
+    experiment_variants: List[Dict[str, Any]] = field(default_factory=list)
+    performance_calibration: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

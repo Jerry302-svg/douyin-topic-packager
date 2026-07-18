@@ -148,6 +148,39 @@ python -m douyin_topic_packager run \
 
 生成的 Markdown 报告会包含“运行摘要”，展示痛点数量、高可信痛点数量、弱证据观察数量、选题包数量和筛选条件。
 
+### 0.3 采集与证据增强
+
+按“有效问题评论”而不是原始评论数自适应停止：
+
+```bash
+python -m douyin_topic_packager run \
+  --profile-url "抖音主页分享链接" \
+  --target-valid-comments 30 \
+  --max-comment-pages 20 \
+  --saturation-pages 3 \
+  --saturation-min-new-ratio 0.08 \
+  --include-replies \
+  --llm
+```
+
+工具会统计独立用户、涉及视频、重复证据和语义变体。至少两条不同证据并获得多用户或跨视频支持，才会进入 `publish_ready`。只有涉及需要专业判断的高风险事实，才会标记为 `review_required`，并要求补充公开来源或对应领域审核；普通教育、创作、生活方式等场景不受这一门槛影响。
+
+评论导出默认移除昵称、IP 属地、用户 ID、手机号和联系方式，只保留不可逆的短哈希用于独立用户计数。仅在本地确有需要时使用 `--keep-user-data`，不要把这类结果提交到 GitHub。
+
+每个选题会生成两个开头实验，并给出应观察的前三秒留存率或完播率。也可以用历史发布数据校准评分：
+
+```bash
+python -m douyin_topic_packager analyze \
+  --videos outputs/topic_packages/profile_videos.json \
+  --comments outputs/topic_packages/comments.json \
+  --performance-feedback performance.json \
+  --llm
+```
+
+`performance.json` 可以是数组，每条包含 `title` 或 `pain_point`，以及 `impressions`、`three_second_rate`、`completion_rate`、`save_rate`、`comment_rate`。样本不足 1000 曝光时只用 10% 权重，避免小样本覆盖证据评分。
+
+`run_manifest.json` 还会保存输入文件哈希、采集停止原因、有效评论数、模型耗时、重试次数和 token 用量，但不会保存 API Key。
+
 也可以分步跑：
 
 ```bash

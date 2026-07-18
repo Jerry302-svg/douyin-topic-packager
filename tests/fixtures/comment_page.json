@@ -1,0 +1,18 @@
+{
+  "comments": [
+    {
+      "cid": "comment-1",
+      "text": "我不知道第一步应该怎么做，有没有简单办法？",
+      "digg_count": 8,
+      "create_time": 1710000000,
+      "reply_comment_total": 2,
+      "ip_label": "北京",
+      "user": {
+        "uid": "recorded-user-id",
+        "nickname": "录制用户"
+      }
+    }
+  ],
+  "has_more": true,
+  "cursor": 20
+}

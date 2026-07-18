@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
+from difflib import SequenceMatcher
 from typing import Dict, Iterable, List
 
 from .schemas import AngleCandidate, CommentItem, PainSignal, ValidationScorecard, VideoItem
@@ -56,6 +57,40 @@ def _cluster_label_from_comment(text: str, keywords: List[str]) -> str:
     return _label_from_text(clean, keywords)
 
 
+def _semantic_key(value: str) -> str:
+    text = _clean_text(value).lower()
+    replacements = {
+        "应该怎么做": "怎么做",
+        "不知道怎么": "怎么",
+        "能不能": "是否可以",
+        "可不可以": "是否可以",
+        "害怕": "担心",
+        "怕": "担心",
+        "没用": "没效果",
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", text)
+
+
+def _matching_bucket_key(buckets: Dict[str, dict], signal_type: str, label: str) -> str:
+    semantic = _semantic_key(label)
+    exact = f"{signal_type}::{semantic}"
+    if exact in buckets:
+        return exact
+    label_keywords = set(_keywords(label, limit=8))
+    for key, bucket in buckets.items():
+        if bucket.get("signal_type") != signal_type:
+            continue
+        existing = _semantic_key(bucket.get("pain") or "")
+        ratio = SequenceMatcher(None, semantic, existing).ratio()
+        existing_keywords = set(_keywords(bucket.get("pain") or "", limit=8))
+        overlap = len(label_keywords & existing_keywords) / max(1, len(label_keywords | existing_keywords))
+        if ratio >= 0.72 or overlap >= 0.6:
+            return key
+    return exact
+
+
 def _keywords(text: str, limit: int = 8) -> List[str]:
     tokens = re.findall(r"[\u4e00-\u9fff]{2,8}|[A-Za-z0-9_]{3,}", text)
     cleaned = [token for token in tokens if token not in STOP_WORDS and len(token) >= 2]
@@ -80,6 +115,10 @@ def _is_meaningful_comment(text: str) -> bool:
     if clean in GENERIC_HELP_TEXTS:
         return False
     return _question_or_pain_score(text) > 0
+
+
+def is_meaningful_comment(text: str) -> bool:
+    return _is_meaningful_comment(text)
 
 
 def _evidence_level(evidence_count: int, confidence: float) -> str:
@@ -107,12 +146,13 @@ def build_pain_signals(videos: List[VideoItem], comments: List[CommentItem], lim
         *,
         signal_type: str,
         evidence_ref: dict,
+        user_id: str = "",
     ) -> None:
         pain = _clean_text(label).strip("，。！？； ")
         evidence_text = _clean_text(evidence)
         if not pain or not evidence_text:
             return
-        bucket_key = f"{signal_type}::{pain}"
+        bucket_key = _matching_bucket_key(buckets, signal_type, pain)
         bucket = buckets.setdefault(
             bucket_key,
             {
@@ -124,18 +164,27 @@ def build_pain_signals(videos: List[VideoItem], comments: List[CommentItem], lim
                 "titles": set(),
                 "score": 0,
                 "signal_type": signal_type,
+                "user_ids": set(),
+                "duplicates": 0,
+                "variants": set(),
             },
         )
-        if evidence_text not in bucket["evidence"]:
-            bucket["evidence"].append(evidence_text)
-        bucket["count"] += 1
-        bucket["score"] += weight
-        if evidence_ref not in bucket["evidence_refs"]:
-            bucket["evidence_refs"].append(evidence_ref)
+        bucket["variants"].add(pain)
         if video:
             bucket["video_ids"].add(video.aweme_id)
             if video.title:
                 bucket["titles"].add(video.title)
+        if user_id:
+            bucket["user_ids"].add(user_id)
+        if evidence_text in bucket["evidence"]:
+            bucket["duplicates"] += 1
+            bucket["count"] += 1
+            return
+        bucket["evidence"].append(evidence_text)
+        bucket["count"] += 1
+        bucket["score"] += weight
+        if evidence_ref not in bucket["evidence_refs"]:
+            bucket["evidence_refs"].append(evidence_ref)
 
     for video in videos:
         title_keywords = _keywords(f"{video.title} {video.desc}", limit=4)
@@ -179,17 +228,39 @@ def build_pain_signals(videos: List[VideoItem], comments: List[CommentItem], lim
                 "aweme_id": comment.aweme_id,
                 "text": text[:180],
             },
+            user_id=str(
+                comment.metadata.get("user_hash")
+                or comment.cid
+                or f"{comment.aweme_id}:{comment.create_time}:{len(text)}"
+            ),
         )
 
     signals: List[PainSignal] = []
     for bucket in buckets.values():
         pain = bucket["pain"]
         evidence_count = int(bucket["count"])
+        unique_evidence_count = len(bucket["evidence"])
         score = int(bucket["score"])
-        strength = max(45, min(96, 45 + min(evidence_count * 4, 30) + min(score // 8, 21)))
-        confidence = round(max(0.45, min(0.95, 0.45 + evidence_count * 0.03 + score / 600)), 2)
+        unique_user_count = len(bucket["user_ids"])
+        unique_video_count = len(bucket["video_ids"])
+        diversity_bonus = min(unique_user_count * 3, 18) + min(unique_video_count * 4, 16)
+        strength = max(45, min(96, 42 + min(unique_evidence_count * 3, 24) + min(score // 10, 18) + diversity_bonus))
+        confidence = round(
+            max(
+                0.42,
+                min(
+                    0.95,
+                    0.42
+                    + unique_evidence_count * 0.02
+                    + unique_user_count * 0.04
+                    + unique_video_count * 0.05
+                    + score / 900,
+                ),
+            ),
+            2,
+        )
         signal_type = str(bucket["signal_type"])
-        evidence_level = _evidence_level(evidence_count, confidence)
+        evidence_level = _evidence_level(unique_evidence_count, confidence)
         if signal_type == "content_hypothesis":
             evidence_level = "weak"
             confidence = min(confidence, 0.55)
@@ -205,7 +276,16 @@ def build_pain_signals(videos: List[VideoItem], comments: List[CommentItem], lim
                 confidence=confidence,
                 evidence_level=evidence_level,
                 signal_type=signal_type,
-                is_actionable=signal_type == "audience_pain" and evidence_level != "weak",
+                is_actionable=(
+                    signal_type == "audience_pain"
+                    and evidence_level != "weak"
+                    and unique_evidence_count >= 2
+                    and (unique_user_count >= 2 or unique_video_count >= 2)
+                ),
+                unique_user_count=unique_user_count,
+                unique_video_count=unique_video_count,
+                duplicate_evidence_count=int(bucket["duplicates"]),
+                semantic_variants=sorted(bucket["variants"])[:8],
             )
         )
     signals.sort(
@@ -260,7 +340,16 @@ def validate_angles(candidates: Iterable[AngleCandidate], signals: Iterable[Pain
         evidence_strength = int(signal.signal_strength if signal else 62)
         seen_pains[candidate.pain_point] += 1
         audience_fit = 88 if signal and signal.is_actionable else 66
-        novelty = max(62, 84 - (seen_pains[candidate.pain_point] - 1) * 10)
+        title_similarity = max(
+            (
+                SequenceMatcher(None, _semantic_key(candidate.angle), _semantic_key(title)).ratio()
+                for title in (signal.source_titles if signal else [])
+                if title
+            ),
+            default=0.0,
+        )
+        novelty = max(35, int(round((1.0 - title_similarity) * 100)))
+        novelty = max(35, novelty - (seen_pains[candidate.pain_point] - 1) * 8)
         conversion = min(92, 58 + evidence_strength // 3 + (8 if signal and signal.is_actionable else 0))
         production_ease = 80 if "对比" in candidate.proof_needed else 84
         sensitive = any(word in candidate.pain_point for word in ["退款", "法院", "诊断", "金额", "合同", "医疗"])
@@ -285,7 +374,10 @@ def validate_angles(candidates: Iterable[AngleCandidate], signals: Iterable[Pain
                 score_reasons={
                     "evidence_strength": f"来自 {signal.evidence_count if signal else 0} 条证据，类型为 {signal.signal_type if signal else 'unknown'}。",
                     "audience_fit": "真实评论痛点加分。" if signal and signal.is_actionable else "当前主要来自标题假设，受众匹配度降级。",
-                    "novelty": f"同一痛点的第 {seen_pains[candidate.pain_point]} 个角度，重复角度递减。",
+                    "novelty": (
+                        f"与来源账号已有标题的最高相似度为 {title_similarity:.0%}；"
+                        f"同一痛点的第 {seen_pains[candidate.pain_point]} 个角度继续递减。"
+                    ),
                     "conversion_potential": "根据证据强度和可行动性计算。",
                     "production_ease": "需要场景或对比素材，制作难度按素材要求计算。",
                     "compliance_safety": "敏感领域词会降低合规分。" if sensitive else "未检测到明显敏感领域词。",

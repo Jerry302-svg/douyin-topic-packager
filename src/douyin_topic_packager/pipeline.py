@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
 from .collector import collect_comments_for_videos, collect_profile_videos
+from .feedback import calibrate_topic_packages, load_performance_feedback
 from .io_utils import read_json, write_json
 from .llm import LLMClient
 from .packager import generate_topic_packages
@@ -43,6 +45,12 @@ def _run_parameters(
     scan_pages: int,
     include_replies: bool,
     comment_concurrency: int,
+    target_valid_comments: int,
+    max_comment_pages: int,
+    saturation_pages: int,
+    saturation_min_new_ratio: float,
+    redact_user_data: bool,
+    performance_feedback_path: str,
 ) -> Dict[str, Any]:
     return {
         "top_n": int(top_n or 0),
@@ -54,12 +62,29 @@ def _run_parameters(
         "scan_pages": int(scan_pages or 0),
         "include_replies": bool(include_replies),
         "comment_concurrency": int(comment_concurrency or 0),
+        "target_valid_comments": int(target_valid_comments or 0),
+        "max_comment_pages": int(max_comment_pages or 0),
+        "saturation_pages": int(saturation_pages or 0),
+        "saturation_min_new_ratio": float(saturation_min_new_ratio),
+        "redact_user_data": bool(redact_user_data),
+        "performance_feedback_path": performance_feedback_path,
     }
 
 
 def _parameter_hash(parameters: Dict[str, Any]) -> str:
     payload = json.dumps(parameters, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _file_hash(path: str | Path) -> str:
+    target = Path(path)
+    if not target.exists() or not target.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with target.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()[:16]
 
 
 def _profile_resume_matches(meta: Dict[str, Any], top_n: int, scan_pages: int) -> bool:
@@ -81,6 +106,9 @@ def _comments_resume_matches(root: Path, parameters: Dict[str, Any]) -> bool:
         int(previous.get("top_n") or 0) == int(parameters.get("top_n") or 0)
         and int(previous.get("max_comments_per_video") or 0) == int(parameters.get("max_comments_per_video") or 0)
         and bool(previous.get("include_replies")) == bool(parameters.get("include_replies"))
+        and int(previous.get("target_valid_comments") or 0) == int(parameters.get("target_valid_comments") or 0)
+        and int(previous.get("max_comment_pages") or 0) == int(parameters.get("max_comment_pages") or 0)
+        and bool(previous.get("redact_user_data", True)) == bool(parameters.get("redact_user_data", True))
     )
 
 
@@ -94,6 +122,7 @@ def write_run_manifest(
     reused_profile: bool,
     reused_comments: bool,
     retried_comment_videos: int = 0,
+    runtime_metadata: Dict[str, Any] | None = None,
 ) -> str:
     target = Path(output_dir) / "run_manifest.json"
     payload = {
@@ -108,6 +137,10 @@ def write_run_manifest(
         },
         "counts": counts,
         "files": files,
+        "provenance": {
+            "file_hashes": {key: _file_hash(path) for key, path in files.items() if isinstance(path, (str, Path))},
+            **(runtime_metadata or {}),
+        },
     }
     return write_json(payload, target)
 
@@ -155,6 +188,11 @@ async def collect_comments_step(
     existing_comments_path: str | Path | None = None,
     existing_status_path: str | Path | None = None,
     only_video_ids: set[str] | None = None,
+    target_valid_comments: int = 0,
+    max_comment_pages: int = 0,
+    saturation_pages: int = 3,
+    saturation_min_new_ratio: float = 0.08,
+    redact_user_data: bool = True,
 ) -> Dict[str, str]:
     all_videos = load_videos(videos_path)
     videos = [item for item in all_videos if not only_video_ids or item.aweme_id in only_video_ids]
@@ -180,6 +218,11 @@ async def collect_comments_step(
         max_concurrency=max_concurrency,
         progress_callback=checkpoint,
         return_status=True,
+        target_valid_comments=target_valid_comments,
+        max_comment_pages=max_comment_pages,
+        saturation_pages=saturation_pages,
+        saturation_min_new_ratio=saturation_min_new_ratio,
+        redact_user_data=redact_user_data,
     )
     comments, statuses = collected
     checkpoint(comments, statuses)
@@ -199,6 +242,7 @@ def analyze_comments_step(
     min_fit_score: int = 0,
     package_limit: int = 0,
     min_evidence_count: int = 0,
+    performance_feedback_path: str | Path | None = None,
 ) -> Dict[str, str]:
     videos = load_videos(videos_path)
     comments = load_comments(comments_path)
@@ -215,6 +259,7 @@ def analyze_comments_step(
         min_fit_score=min_fit_score,
         package_limit=package_limit,
     )
+    packages = calibrate_topic_packages(packages, load_performance_feedback(performance_feedback_path))
 
     root = Path(output_dir)
     run = TopicPackageRun(
@@ -266,7 +311,14 @@ async def run_topic_package_pipeline(
     scan_pages: int = 10,
     include_replies: bool = False,
     comment_concurrency: int = 2,
+    target_valid_comments: int = 0,
+    max_comment_pages: int = 0,
+    saturation_pages: int = 3,
+    saturation_min_new_ratio: float = 0.08,
+    redact_user_data: bool = True,
+    performance_feedback_path: str = "",
 ) -> Dict[str, str]:
+    started = time.perf_counter()
     root = Path(output_dir)
     meta_path = root / "profile_meta.json"
     videos_path = root / "profile_videos.json"
@@ -282,7 +334,24 @@ async def run_topic_package_pipeline(
         scan_pages=scan_pages,
         include_replies=include_replies,
         comment_concurrency=comment_concurrency,
+        target_valid_comments=target_valid_comments,
+        max_comment_pages=max_comment_pages,
+        saturation_pages=saturation_pages,
+        saturation_min_new_ratio=saturation_min_new_ratio,
+        redact_user_data=redact_user_data,
+        performance_feedback_path=performance_feedback_path,
     )
+    adaptive_comment_options: Dict[str, Any] = {}
+    if target_valid_comments:
+        adaptive_comment_options["target_valid_comments"] = target_valid_comments
+    if max_comment_pages:
+        adaptive_comment_options["max_comment_pages"] = max_comment_pages
+    if saturation_pages != 3:
+        adaptive_comment_options["saturation_pages"] = saturation_pages
+    if saturation_min_new_ratio != 0.08:
+        adaptive_comment_options["saturation_min_new_ratio"] = saturation_min_new_ratio
+    if not redact_user_data:
+        adaptive_comment_options["redact_user_data"] = False
     meta = read_json(meta_path) if meta_path.exists() else {}
     reused_profile = False
     reused_comments = False
@@ -327,6 +396,7 @@ async def run_topic_package_pipeline(
                 existing_comments_path=comments_path,
                 existing_status_path=comments_status_path,
                 only_video_ids=pending_ids,
+                **adaptive_comment_options,
             )
         else:
             commented = {
@@ -342,6 +412,7 @@ async def run_topic_package_pipeline(
             max_comments_per_video=max_comments_per_video,
             include_replies=include_replies,
             max_concurrency=comment_concurrency,
+            **adaptive_comment_options,
         )
     analyzed = analyze_comments_step(
         source_url=profile_url,
@@ -355,6 +426,7 @@ async def run_topic_package_pipeline(
         min_fit_score=min_fit_score,
         package_limit=package_limit,
         min_evidence_count=min_evidence_count,
+        performance_feedback_path=performance_feedback_path,
     )
     manifest = write_run_manifest(
         output_dir=output_dir,
@@ -363,6 +435,25 @@ async def run_topic_package_pipeline(
         counts={
             "videos": len(load_videos(collected["profile_videos"])),
             "comments": len(load_comments(commented["comments"])),
+            "valid_comments": sum(
+                int(item.get("valid_comment_count") or 0)
+                for item in (
+                    read_json(commented["comments_status"]).values()
+                    if commented.get("comments_status") and Path(commented["comments_status"]).exists()
+                    else []
+                )
+            ),
+            "saturated_comment_videos": len(
+                [
+                    item
+                    for item in (
+                        read_json(commented["comments_status"]).values()
+                        if commented.get("comments_status") and Path(commented["comments_status"]).exists()
+                        else []
+                    )
+                    if item.get("stop_reason") == "signal_saturation"
+                ]
+            ),
             "pain_signals": len(read_json(analyzed["pain_signals"])),
             "topic_packages": len(read_json(analyzed["topic_packages"])),
             "failed_comment_videos": len(
@@ -381,5 +472,15 @@ async def run_topic_package_pipeline(
         reused_profile=reused_profile,
         reused_comments=reused_comments,
         retried_comment_videos=retried_comment_videos,
+        runtime_metadata={
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "llm_provider": llm_client.config.normalized_provider if llm_client else "",
+            "llm_model": llm_client.config.model if llm_client else "",
+            "llm_metrics": (
+                llm_client.snapshot_metrics()
+                if llm_client is not None and callable(getattr(llm_client, "snapshot_metrics", None))
+                else {}
+            ),
+        },
     )
     return {**collected, **commented, **analyzed, "run_manifest": manifest}
