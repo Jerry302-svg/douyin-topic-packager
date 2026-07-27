@@ -9,19 +9,8 @@ from douyin_topic_packager import pipeline
 
 def test_run_topic_package_pipeline_resume_reuses_existing_files_and_filters_evidence(tmp_path, monkeypatch):
     root = Path(tmp_path)
-    (root / "profile_meta.json").write_text(
-        json.dumps(
-            {
-                "source_url": "https://v.douyin.com/example/",
-                "resolved_url": "https://www.douyin.com/user/test",
-                "sec_uid": "test_sec_uid",
-                "top_n": 2,
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    (root / "profile_videos.json").write_text(
+    videos_path = root / "profile_videos.json"
+    videos_path.write_text(
         json.dumps(
             [
                 {
@@ -35,7 +24,23 @@ def test_run_topic_package_pipeline_resume_reuses_existing_files_and_filters_evi
         ),
         encoding="utf-8",
     )
-    (root / "comments.json").write_text(
+    (root / "profile_meta.json").write_text(
+        json.dumps(
+            {
+                "artifact_schema_version": pipeline.PROFILE_ARTIFACT_SCHEMA_VERSION,
+                "source_url": "https://v.douyin.com/example/",
+                "resolved_url": "https://www.douyin.com/user/test",
+                "sec_uid": "test_sec_uid",
+                "top_n": 2,
+                "scan_pages": 10,
+                "profile_videos_hash": pipeline._file_hash(videos_path),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    comments_path = root / "comments.json"
+    comments_path.write_text(
         json.dumps(
             [
                 {"aweme_id": "100", "text": "我不知道第一步怎么做，有没有简单办法？", "like_count": 8},
@@ -43,6 +48,35 @@ def test_run_topic_package_pipeline_resume_reuses_existing_files_and_filters_evi
                 {"aweme_id": "100", "text": "单条证据应该被过滤", "like_count": 1},
             ],
             ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    comments_status_path = root / "comments_status.json"
+    comments_status_path.write_text(
+        json.dumps({"100": {"status": "success", "comment_count": 3}}),
+        encoding="utf-8",
+    )
+    (root / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "parameters": {
+                    "profile_url": "https://v.douyin.com/example/",
+                    "top_n": 2,
+                    "max_comments_per_video": 0,
+                    "include_replies": False,
+                    "target_valid_comments": 0,
+                    "max_comment_pages": 0,
+                    "saturation_pages": 3,
+                    "saturation_min_new_ratio": 0.08,
+                    "redact_user_data": True,
+                },
+                "provenance": {
+                    "file_hashes": {
+                        "comments": pipeline._file_hash(comments_path),
+                        "comments_status": pipeline._file_hash(comments_status_path),
+                    }
+                },
+            }
         ),
         encoding="utf-8",
     )
@@ -219,28 +253,33 @@ def test_run_topic_package_pipeline_fails_when_profile_collection_is_empty(tmp_p
 
 def test_resume_retries_only_failed_comment_videos(tmp_path, monkeypatch):
     root = Path(tmp_path)
+    videos = [
+        {"aweme_id": "100", "title": "第一步怎么办", "comment_count": 2},
+        {"aweme_id": "200", "title": "第二条", "comment_count": 1},
+    ]
+    videos_path = root / "profile_videos.json"
+    videos_path.write_text(json.dumps(videos, ensure_ascii=False), encoding="utf-8")
     (root / "profile_meta.json").write_text(
         json.dumps(
             {
+                "artifact_schema_version": pipeline.PROFILE_ARTIFACT_SCHEMA_VERSION,
                 "source_url": "https://v.douyin.com/example/",
                 "resolved_url": "https://www.douyin.com/user/test",
                 "sec_uid": "uid",
                 "top_n": 2,
                 "scan_pages": 10,
+                "profile_videos_hash": pipeline._file_hash(videos_path),
             }
         ),
         encoding="utf-8",
     )
-    videos = [
-        {"aweme_id": "100", "title": "第一步怎么办", "comment_count": 2},
-        {"aweme_id": "200", "title": "第二条", "comment_count": 1},
-    ]
-    (root / "profile_videos.json").write_text(json.dumps(videos, ensure_ascii=False), encoding="utf-8")
-    (root / "comments.json").write_text(
+    comments_path = root / "comments.json"
+    comments_path.write_text(
         json.dumps([{"aweme_id": "100", "cid": "c1", "text": "第一步不知道怎么做？"}], ensure_ascii=False),
         encoding="utf-8",
     )
-    (root / "comments_status.json").write_text(
+    comments_status_path = root / "comments_status.json"
+    comments_status_path.write_text(
         json.dumps(
             {
                 "100": {"status": "success", "comment_count": 1, "error": ""},
@@ -253,10 +292,22 @@ def test_resume_retries_only_failed_comment_videos(tmp_path, monkeypatch):
         json.dumps(
             {
                 "parameters": {
+                    "profile_url": "https://v.douyin.com/example/",
                     "top_n": 2,
                     "max_comments_per_video": 10,
                     "include_replies": False,
-                }
+                    "target_valid_comments": 0,
+                    "max_comment_pages": 0,
+                    "saturation_pages": 3,
+                    "saturation_min_new_ratio": 0.08,
+                    "redact_user_data": True,
+                },
+                "provenance": {
+                    "file_hashes": {
+                        "comments": pipeline._file_hash(comments_path),
+                        "comments_status": pipeline._file_hash(comments_status_path),
+                    }
+                },
             }
         ),
         encoding="utf-8",
@@ -305,3 +356,81 @@ def test_resume_retries_only_failed_comment_videos(tmp_path, monkeypatch):
     assert calls == [{"200"}]
     assert manifest["resume"]["retried_comment_videos"] == 1
     assert manifest["counts"]["failed_comment_videos"] == 0
+
+
+def test_profile_resume_rejects_missing_metadata_cross_account_and_tampering(tmp_path):
+    videos_path = Path(tmp_path) / "profile_videos.json"
+    videos_path.write_text('[{"aweme_id": "100"}]', encoding="utf-8")
+    meta = {
+        "artifact_schema_version": pipeline.PROFILE_ARTIFACT_SCHEMA_VERSION,
+        "source_url": "https://v.douyin.com/account-a/",
+        "resolved_url": "https://www.douyin.com/user/a",
+        "sec_uid": "uid-a",
+        "top_n": 20,
+        "scan_pages": 10,
+        "profile_videos_hash": pipeline._file_hash(videos_path),
+    }
+
+    assert pipeline._profile_resume_matches(
+        meta,
+        "https://v.douyin.com/account-a/",
+        20,
+        10,
+        videos_path,
+    )
+    assert not pipeline._profile_resume_matches({}, "https://v.douyin.com/account-a/", 20, 10, videos_path)
+    assert not pipeline._profile_resume_matches(
+        meta,
+        "https://v.douyin.com/account-b/",
+        20,
+        10,
+        videos_path,
+    )
+
+    videos_path.write_text('[{"aweme_id": "changed"}]', encoding="utf-8")
+    assert not pipeline._profile_resume_matches(
+        meta,
+        "https://v.douyin.com/account-a/",
+        20,
+        10,
+        videos_path,
+    )
+
+
+def test_comment_resume_requires_matching_parameters_status_and_hashes(tmp_path):
+    root = Path(tmp_path)
+    comments_path = root / "comments.json"
+    status_path = root / "comments_status.json"
+    comments_path.write_text("[]", encoding="utf-8")
+    status_path.write_text('{"100": {"status": "success"}}', encoding="utf-8")
+    parameters = {
+        "profile_url": "https://v.douyin.com/example/",
+        "top_n": 2,
+        "max_comments_per_video": 10,
+        "include_replies": False,
+        "target_valid_comments": 0,
+        "max_comment_pages": 0,
+        "saturation_pages": 3,
+        "saturation_min_new_ratio": 0.08,
+        "redact_user_data": True,
+    }
+    (root / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "parameters": parameters,
+                "provenance": {
+                    "file_hashes": {
+                        "comments": pipeline._file_hash(comments_path),
+                        "comments_status": pipeline._file_hash(status_path),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert pipeline._comments_resume_matches(root, parameters)
+    assert not pipeline._comments_resume_matches(root, {**parameters, "saturation_pages": 5})
+
+    status_path.unlink()
+    assert not pipeline._comments_resume_matches(root, parameters)

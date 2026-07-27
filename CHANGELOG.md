@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.0] - 2026-07-27
+
+### Added
+
+- Versioned profile artifacts with source-account identity and content-hash validation.
+- Comment resume validation across collection parameters, status coverage, and manifest file hashes.
+- Domain-neutral audience-intent clustering for process, choice, risk, outcome, and resource constraints.
+- Reader-facing next actions and Chinese report labels for confidence, evidence, signal, and score states.
+- Conservative feedback calibration with exposure minimums, recency weighting, outlier limits, and confidence levels.
+
+### Changed
+
+- Missing or inconsistent comment status now retries affected videos instead of accepting partial data.
+- Adaptive saturation settings participate in resume compatibility checks.
+- Default low-risk CTA no longer triggers the project’s own unsafe-individual-judgment rule.
+- High-stakes review remains evidence-aware across legal, medical, financial, safety, and other sensitive domains.
+
 ## [0.3.0] - 2026-07-18
 
 ### Added

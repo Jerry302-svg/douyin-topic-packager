@@ -21,6 +21,45 @@ GENERIC_HELP_TEXTS = {
     "路过",
 }
 
+INTENT_PATTERNS = (
+    (
+        "不知道第一步怎么做",
+        ("第一步", "怎么开始", "从哪开始", "先做什么", "流程", "步骤"),
+    ),
+    (
+        "不确定该如何选择或判断",
+        ("能不能", "可不可以", "是否", "该不该", "怎么选", "如何选", "怎么判断"),
+    ),
+    (
+        "担心选择或行动带来风险",
+        ("担心", "害怕", "被骗", "套路", "损失", "风险", "踩坑", "做错"),
+    ),
+    (
+        "担心投入后达不到预期",
+        ("没效果", "没用", "白忙", "失败", "达不到", "没结果"),
+    ),
+    (
+        "受到时间、预算或资源限制",
+        ("没时间", "来不及", "预算", "太贵", "成本", "精力", "资源不够"),
+    ),
+)
+
+HIGH_STAKES_SIGNAL_TERMS = (
+    "法律",
+    "法院",
+    "合同",
+    "违约金",
+    "医疗",
+    "诊断",
+    "药",
+    "贷款",
+    "投资",
+    "理财",
+    "税",
+    "维权",
+    "人身安全",
+)
+
 
 def _clean_text(value: str) -> str:
     return " ".join(str(value or "").replace("\n", " ").split()).strip()
@@ -44,16 +83,11 @@ def _label_from_text(value: str, fallback_keywords: List[str] | None = None, max
 
 def _cluster_label_from_comment(text: str, keywords: List[str]) -> str:
     clean = _clean_text(text)
-    if "第一步" in clean and any(word in clean for word in ["不知道", "怎么", "怎么办", "怕"]):
-        return "不知道第一步怎么做"
-    if "违约金" in clean:
-        return "担心违约金风险"
-    if any(word in clean for word in ["被骗", "骗入职", "套路"]):
-        return "担心被套路或被骗"
-    if "能不能签" in clean or ("签" in clean and "能不能" in clean):
-        return "担心合同或公会能不能签"
-    if any(word in clean for word in ["没效果", "没用", "白忙"]):
-        return "担心照做以后没有效果"
+    if any(term in clean for term in HIGH_STAKES_SIGNAL_TERMS):
+        return "需要核验高风险事项的判断边界"
+    for label, patterns in INTENT_PATTERNS:
+        if any(pattern in clean for pattern in patterns):
+            return label
     return _label_from_text(clean, keywords)
 
 
@@ -322,7 +356,10 @@ def build_angle_candidates(signals: Iterable[PainSignal], limit: int = 16) -> Li
                     pain_point=pain,
                     angle=angle,
                     opening_hook=hook,
-                    cta_direction=f"评论区留下你卡住的具体场景、已经试过的方法和最想解决的一步，我帮你判断“{pain[:24]}”先从哪里切。",
+                    cta_direction=(
+                        "评论区说说你卡在哪一步、已经试过什么；"
+                        f"后续内容会优先拆解“{pain[:24]}”里最常见的障碍。"
+                    ),
                     proof_needed="补一个真实场景、常见误区或前后对比，用来证明这条内容不是空泛建议。",
                 )
             )
@@ -352,8 +389,18 @@ def validate_angles(candidates: Iterable[AngleCandidate], signals: Iterable[Pain
         novelty = max(35, novelty - (seen_pains[candidate.pain_point] - 1) * 8)
         conversion = min(92, 58 + evidence_strength // 3 + (8 if signal and signal.is_actionable else 0))
         production_ease = 80 if "对比" in candidate.proof_needed else 84
-        sensitive = any(word in candidate.pain_point for word in ["退款", "法院", "诊断", "金额", "合同", "医疗"])
+        sensitivity_text = " ".join(
+            [candidate.pain_point, *((signal.evidence if signal else [])[:5])]
+        )
+        sensitive = any(word in sensitivity_text for word in HIGH_STAKES_SIGNAL_TERMS)
         compliance = 78 if sensitive else 86
+        signal_type_label = (
+            "受众真实痛点"
+            if signal and signal.signal_type == "audience_pain"
+            else "内容标题假设"
+            if signal
+            else "未知"
+        )
         scores = {
             "evidence_strength": evidence_strength,
             "audience_fit": audience_fit,
@@ -372,7 +419,10 @@ def validate_angles(candidates: Iterable[AngleCandidate], signals: Iterable[Pain
                 risk_notes=["不要承诺保证结果", "不要凭空编造案例、身份、金额或确定性结论"],
                 rewrite_suggestion="" if total >= 75 else "把痛点说得更具体，补一个更真实的场景。",
                 score_reasons={
-                    "evidence_strength": f"来自 {signal.evidence_count if signal else 0} 条证据，类型为 {signal.signal_type if signal else 'unknown'}。",
+                    "evidence_strength": (
+                        f"来自 {signal.evidence_count if signal else 0} 条证据，类型为 "
+                        f"{signal_type_label}。"
+                    ),
                     "audience_fit": "真实评论痛点加分。" if signal and signal.is_actionable else "当前主要来自标题假设，受众匹配度降级。",
                     "novelty": (
                         f"与来源账号已有标题的最高相似度为 {title_similarity:.0%}；"

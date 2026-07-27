@@ -4,6 +4,7 @@ from douyin_topic_packager.comments import CommentsCollector
 from douyin_topic_packager.feedback import calibrate_topic_packages
 from douyin_topic_packager.packager import audit_topic_packages, fallback_topic_packages
 from douyin_topic_packager.privacy import sanitize_comment
+from douyin_topic_packager.reports import render_topic_packages_markdown
 from douyin_topic_packager.schemas import CommentItem, VideoItem
 from douyin_topic_packager.signals import build_angle_candidates, build_pain_signals, validate_angles
 
@@ -129,6 +130,61 @@ def test_general_topic_keeps_helpful_cta_without_professional_review():
     assert "我帮你整理" in audited[0].cta_direction
 
 
+def test_default_general_cta_is_safe_and_not_rewritten():
+    comments = [
+        CommentItem(
+            aweme_id="1",
+            cid="1",
+            text="新手做蛋糕总是塌，不知道第一步怎么做？",
+            metadata={"user_hash": "u1"},
+        ),
+        CommentItem(
+            aweme_id="2",
+            cid="2",
+            text="第一次做蛋糕总塌，第一步不知道怎么做怎么办？",
+            metadata={"user_hash": "u2"},
+        ),
+    ]
+    signals = build_pain_signals([], comments)
+    candidates = build_angle_candidates(signals)
+    scorecards = validate_angles(candidates, signals)
+    package = fallback_topic_packages(signals, candidates, scorecards)[0]
+    original_cta = package.cta_direction
+
+    audited = audit_topic_packages([package], signals, scorecards)
+
+    assert audited[0].cta_direction == original_cta
+    assert "我帮你判断" not in audited[0].cta_direction
+    assert not any("个案判断" in warning for warning in audited[0].quality_warnings)
+
+
+def test_signal_intents_are_domain_neutral_but_high_stakes_still_require_review():
+    general_comments = [
+        CommentItem(aweme_id="1", cid="1", text="预算有限又没时间，不知道该怎么开始？", metadata={"user_hash": "u1"}),
+        CommentItem(aweme_id="2", cid="2", text="没时间而且预算不够，第一步要怎么做？", metadata={"user_hash": "u2"}),
+    ]
+    high_stakes_comments = [
+        CommentItem(aweme_id="3", cid="3", text="合同违约金到底应该怎么判断？", metadata={"user_hash": "u3"}),
+        CommentItem(aweme_id="4", cid="4", text="担心合同里的违约金有风险怎么办？", metadata={"user_hash": "u4"}),
+    ]
+
+    general_signal = next(
+        item for item in build_pain_signals([], general_comments) if item.signal_type == "audience_pain"
+    )
+    high_stakes_signal = next(
+        item for item in build_pain_signals([], high_stakes_comments) if item.signal_type == "audience_pain"
+    )
+    high_stakes_candidates = build_angle_candidates([high_stakes_signal])
+    scorecards = validate_angles(high_stakes_candidates, [high_stakes_signal])
+
+    assert general_signal.pain_point in {
+        "不知道第一步怎么做",
+        "受到时间、预算或资源限制",
+    }
+    assert "合同" not in high_stakes_signal.pain_point
+    assert scorecards[0].scores["compliance_safety"] < 86
+
+
 def test_performance_feedback_calibrates_fit_score_without_overriding_evidence():
     comments = [
         CommentItem(aweme_id="1", cid="1", text="不知道第一步怎么做，有没有简单办法？", metadata={"user_hash": "u1"}),
@@ -157,7 +213,62 @@ def test_performance_feedback_calibrates_fit_score_without_overriding_evidence()
 
     assert calibrated.performance_calibration["status"] == "applied"
     assert calibrated.performance_calibration["original_fit_score"] == original_score
+    assert calibrated.performance_calibration["confidence"] == "low"
     assert calibrated.fit_score != original_score
+
+
+def test_performance_feedback_requires_enough_exposure_before_calibration():
+    comments = [
+        CommentItem(aweme_id="1", cid="1", text="不知道第一步怎么做，有没有简单办法？", metadata={"user_hash": "u1"}),
+        CommentItem(aweme_id="2", cid="2", text="第一步不知道怎么做，担心做错怎么办？", metadata={"user_hash": "u2"}),
+    ]
+    signals = build_pain_signals([], comments)
+    candidates = build_angle_candidates(signals)
+    scorecards = validate_angles(candidates, signals)
+    package = audit_topic_packages(fallback_topic_packages(signals, candidates, scorecards), signals, scorecards)[0]
+    original_score = package.fit_score
+
+    calibrated = calibrate_topic_packages(
+        [package],
+        [
+            {
+                "pain_point": package.pain_point,
+                "title": package.brief_title,
+                "impressions": 200,
+                "three_second_rate": 95,
+                "completion_rate": 90,
+            }
+        ],
+    )[0]
+
+    assert calibrated.performance_calibration["status"] == "insufficient_data"
+    assert calibrated.fit_score == original_score
+
+
+def test_report_uses_reader_facing_labels_and_next_actions():
+    comments = [
+        CommentItem(aweme_id="1", cid="1", text="不知道第一步怎么做，有没有简单办法？", metadata={"user_hash": "u1"}),
+        CommentItem(aweme_id="2", cid="2", text="第一步不知道怎么做，担心做错怎么办？", metadata={"user_hash": "u2"}),
+    ]
+    signals = build_pain_signals([], comments)
+    candidates = build_angle_candidates(signals)
+    scorecards = validate_angles(candidates, signals)
+    packages = audit_topic_packages(fallback_topic_packages(signals, candidates, scorecards), signals, scorecards)
+
+    report = render_topic_packages_markdown(
+        source_url="https://example.com",
+        resolved_url="https://example.com/user",
+        sec_uid="uid",
+        videos=[],
+        pain_signals=signals,
+        scorecards=scorecards,
+        topic_packages=packages,
+    )
+
+    assert "## 下一步动作" in report
+    assert "使用建议：可直接使用" in report
+    assert "publish_ready" not in report
+    assert "audience_pain" not in report
 
 
 def test_comment_sanitizer_removes_identity_and_contact_details():

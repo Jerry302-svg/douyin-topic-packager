@@ -17,6 +17,20 @@ from .schemas import CommentItem, PainSignal, TopicPackageRun, VideoItem
 from .signals import build_angle_candidates, build_pain_signals, validate_angles
 
 
+PROFILE_ARTIFACT_SCHEMA_VERSION = 2
+COMMENT_RESUME_PARAMETER_KEYS = (
+    "profile_url",
+    "top_n",
+    "max_comments_per_video",
+    "include_replies",
+    "target_valid_comments",
+    "max_comment_pages",
+    "saturation_pages",
+    "saturation_min_new_ratio",
+    "redact_user_data",
+)
+
+
 def load_videos(path: str | Path) -> List[VideoItem]:
     data = read_json(path)
     return [VideoItem(**item) for item in data]
@@ -36,6 +50,7 @@ def filter_pain_signals(pain_signals: List[PainSignal], min_evidence_count: int 
 
 def _run_parameters(
     *,
+    profile_url: str,
     top_n: int,
     max_comments_per_video: int,
     conversion_mode: str,
@@ -53,6 +68,7 @@ def _run_parameters(
     performance_feedback_path: str,
 ) -> Dict[str, Any]:
     return {
+        "profile_url": str(profile_url or "").strip(),
         "top_n": int(top_n or 0),
         "max_comments_per_video": int(max_comments_per_video or 0),
         "conversion_mode": conversion_mode,
@@ -87,28 +103,49 @@ def _file_hash(path: str | Path) -> str:
     return digest.hexdigest()[:16]
 
 
-def _profile_resume_matches(meta: Dict[str, Any], top_n: int, scan_pages: int) -> bool:
+def _profile_resume_matches(
+    meta: Dict[str, Any],
+    profile_url: str,
+    top_n: int,
+    scan_pages: int,
+    videos_path: str | Path,
+) -> bool:
     if not meta:
-        return True
+        return False
+    expected_hash = str(meta.get("profile_videos_hash") or "")
+    source_matches = str(meta.get("source_url") or "").strip() == str(profile_url or "").strip()
     return (
-        int(meta.get("top_n") or 0) == int(top_n or 0)
+        int(meta.get("artifact_schema_version") or 0) == PROFILE_ARTIFACT_SCHEMA_VERSION
+        and source_matches
+        and bool(str(meta.get("resolved_url") or "").strip() or str(meta.get("sec_uid") or "").strip())
+        and int(meta.get("top_n") or 0) == int(top_n or 0)
         and int(meta.get("scan_pages") or 10) == int(scan_pages or 0)
+        and bool(expected_hash)
+        and expected_hash == _file_hash(videos_path)
     )
 
 
 def _comments_resume_matches(root: Path, parameters: Dict[str, Any]) -> bool:
     manifest_path = root / "run_manifest.json"
     if not manifest_path.exists():
-        return int(parameters.get("max_comments_per_video") or 0) == 0
-    manifest = read_json(manifest_path)
+        return False
+    try:
+        manifest = read_json(manifest_path)
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(manifest, dict):
+        return False
     previous = manifest.get("parameters") or {}
+    if any(previous.get(key) != parameters.get(key) for key in COMMENT_RESUME_PARAMETER_KEYS):
+        return False
+    file_hashes = (manifest.get("provenance") or {}).get("file_hashes") or {}
+    comments_path = root / "comments.json"
+    status_path = root / "comments_status.json"
     return (
-        int(previous.get("top_n") or 0) == int(parameters.get("top_n") or 0)
-        and int(previous.get("max_comments_per_video") or 0) == int(parameters.get("max_comments_per_video") or 0)
-        and bool(previous.get("include_replies")) == bool(parameters.get("include_replies"))
-        and int(previous.get("target_valid_comments") or 0) == int(parameters.get("target_valid_comments") or 0)
-        and int(previous.get("max_comment_pages") or 0) == int(parameters.get("max_comment_pages") or 0)
-        and bool(previous.get("redact_user_data", True)) == bool(parameters.get("redact_user_data", True))
+        bool(file_hashes.get("comments"))
+        and bool(file_hashes.get("comments_status"))
+        and file_hashes["comments"] == _file_hash(comments_path)
+        and file_hashes["comments_status"] == _file_hash(status_path)
     )
 
 
@@ -162,18 +199,21 @@ async def collect_profile_step(
     if not videos:
         raise RuntimeError("未采集到视频，请检查 Cookie 是否过期、主页链接是否正确，或稍后重试")
     root = Path(output_dir)
+    videos_path = write_json([item.to_dict() for item in videos], root / "profile_videos.json")
     meta = {
+        "artifact_schema_version": PROFILE_ARTIFACT_SCHEMA_VERSION,
         "source_url": profile_url,
         "resolved_url": resolved_url,
         "sec_uid": sec_uid,
         "top_n": top_n,
         "scan_pages": scan_pages,
+        "profile_videos_hash": _file_hash(videos_path),
     }
     return {
         "resolved_url": resolved_url,
         "sec_uid": sec_uid,
         "profile_meta": write_json(meta, root / "profile_meta.json"),
-        "profile_videos": write_json([item.to_dict() for item in videos], root / "profile_videos.json"),
+        "profile_videos": videos_path,
     }
 
 
@@ -325,6 +365,7 @@ async def run_topic_package_pipeline(
     comments_path = root / "comments.json"
     comments_status_path = root / "comments_status.json"
     parameters = _run_parameters(
+        profile_url=profile_url,
         top_n=top_n,
         max_comments_per_video=max_comments_per_video,
         conversion_mode=conversion_mode,
@@ -352,11 +393,21 @@ async def run_topic_package_pipeline(
         adaptive_comment_options["saturation_min_new_ratio"] = saturation_min_new_ratio
     if not redact_user_data:
         adaptive_comment_options["redact_user_data"] = False
-    meta = read_json(meta_path) if meta_path.exists() else {}
+    try:
+        loaded_meta = read_json(meta_path) if meta_path.exists() else {}
+    except (OSError, ValueError, TypeError):
+        loaded_meta = {}
+    meta = loaded_meta if isinstance(loaded_meta, dict) else {}
     reused_profile = False
     reused_comments = False
     retried_comment_videos = 0
-    if resume and videos_path.exists() and _profile_resume_matches(meta, top_n, scan_pages):
+    if resume and videos_path.exists() and _profile_resume_matches(
+        meta,
+        profile_url,
+        top_n,
+        scan_pages,
+        videos_path,
+    ):
         collected = {
             "resolved_url": meta.get("resolved_url", ""),
             "sec_uid": meta.get("sec_uid", ""),
@@ -376,14 +427,18 @@ async def run_topic_package_pipeline(
         raise RuntimeError("未采集到视频，请检查 Cookie 是否过期、主页链接是否正确，或稍后重试")
     if resume and reused_profile and comments_path.exists() and _comments_resume_matches(root, parameters):
         if comments_status_path.exists():
-            previous_status = read_json(comments_status_path)
+            try:
+                loaded_status = read_json(comments_status_path)
+            except (OSError, ValueError, TypeError):
+                loaded_status = {}
+            previous_status = loaded_status if isinstance(loaded_status, dict) else {}
             pending_ids = {
                 video.aweme_id
                 for video in load_videos(collected["profile_videos"])
                 if (previous_status.get(video.aweme_id) or {}).get("status") != "success"
             }
         else:
-            pending_ids = set()
+            pending_ids = {video.aweme_id for video in load_videos(collected["profile_videos"])}
         if pending_ids:
             retried_comment_videos = len(pending_ids)
             commented = await collect_comments_step(

@@ -6,6 +6,31 @@ from typing import List
 from .schemas import PainSignal, TopicPackage, ValidationScorecard, VideoItem
 
 
+CONFIDENCE_LABELS = {
+    "publish_ready": "可直接使用",
+    "review_required": "核验后使用",
+    "exploratory": "探索性选题",
+}
+CLAIM_STATUS_LABELS = {
+    "supported": "已有证据支持",
+    "needs_verification": "需要补充证据",
+    "needs_external_verification": "需要外部核验",
+}
+SIGNAL_TYPE_LABELS = {
+    "audience_pain": "受众真实痛点",
+    "content_hypothesis": "内容标题假设",
+}
+EVIDENCE_LEVEL_LABELS = {"strong": "强", "medium": "中", "weak": "弱"}
+SCORE_LABELS = {
+    "evidence_strength": "证据强度",
+    "audience_fit": "受众适配",
+    "novelty": "新颖度",
+    "conversion_potential": "转化潜力",
+    "production_ease": "制作难度",
+    "compliance_safety": "安全与合规",
+}
+
+
 def render_topic_packages_markdown(
     *,
     source_url: str,
@@ -49,13 +74,27 @@ def render_topic_packages_markdown(
         f"- 最小适配分：{max(0, int(min_fit_score or 0))}",
         f"- 选题包数量上限：{max(0, int(package_limit or 0)) or '不限制'}",
         "",
+        "## 下一步动作",
+        "",
+    ]
+    if publish_ready_packages:
+        lines.append(f"- 优先拍摄前 {min(3, len(publish_ready_packages))} 条“可直接使用”选题，并保留对应证据截图。")
+    elif review_required_packages:
+        lines.append("- 先补充公开来源或对应领域人工审核，核验完成后再进入拍摄。")
+    else:
+        lines.append("- 当前证据不足，先补评论、访谈或搜索反馈，不建议直接进入正式拍摄。")
+    lines.extend(
+        [
+            "- 发布后回填曝光、3 秒留存、完播、收藏和评论数据，用于下一轮校准。",
+            "",
         "## 推荐拍摄顺序"
         if publish_ready_packages
         else "## 核验优先级（审核后再拍）"
         if review_required_packages
         else "## 探索优先级（补证据后再拍）",
         "",
-    ]
+        ]
+    )
     _append_shooting_order(lines, publish_ready_packages or review_required_packages or exploratory_packages)
 
     if publish_ready_packages:
@@ -98,7 +137,7 @@ def render_topic_packages_markdown(
     scorecard_section_number = "五" if weak_signals else "四"
     lines.extend([f"## {scorecard_section_number}、角度验证评分", ""])
     for index, scorecard in enumerate(scorecards, 1):
-        score_text = "，".join(f"{key}: {value}" for key, value in scorecard.scores.items())
+        score_text = "，".join(f"{SCORE_LABELS.get(key, key)}: {value}" for key, value in scorecard.scores.items())
         lines.extend(
             [
                 f"### {index}. {scorecard.angle}",
@@ -113,7 +152,8 @@ def render_topic_packages_markdown(
         if scorecard.score_reasons:
             lines.insert(
                 len(lines) - 1,
-                "- 评分依据：" + "；".join(f"{key}: {value}" for key, value in scorecard.score_reasons.items()),
+                "- 评分依据："
+                + "；".join(f"{SCORE_LABELS.get(key, key)}: {value}" for key, value in scorecard.score_reasons.items()),
             )
 
     return "\n".join(lines).strip() + "\n"
@@ -129,8 +169,8 @@ def _append_topic_packages(lines: List[str], topic_packages: List[TopicPackage])
                 f"### {index}. {package.brief_title}",
                 "",
                 f"- 适配分：{package.fit_score}",
-                f"- 置信级别：{package.confidence_level}",
-                f"- 事实状态：{package.claim_status}",
+                f"- 使用建议：{CONFIDENCE_LABELS.get(package.confidence_level, package.confidence_level)}",
+                f"- 证据状态：{CLAIM_STATUS_LABELS.get(package.claim_status, package.claim_status)}",
                 f"- 外部核验：{'需要' if package.external_verification_required else '不需要'}",
                 f"- 新颖度：{package.novelty_score}",
                 f"- 这条视频讲什么：{package.topic}",
@@ -152,10 +192,7 @@ def _append_topic_packages(lines: List[str], topic_packages: List[TopicPackage])
         for note in (package.material_notes or [])[:4]:
             lines.append(f"  - 素材：{note}")
         if package.performance_calibration:
-            lines.append(
-                "- 效果校准："
-                + "；".join(f"{key}={value}" for key, value in package.performance_calibration.items())
-            )
+            lines.append(f"- 效果校准：{_calibration_summary(package.performance_calibration)}")
         if package.experiment_variants:
             lines.append("- A/B 实验：")
             for experiment in package.experiment_variants[:2]:
@@ -189,14 +226,14 @@ def _append_pain_signals(lines: List[str], pain_signals: List[PainSignal]) -> No
             [
                 f"### {index}. {signal.pain_point}",
                 "",
-                f"- 证据等级：{getattr(signal, 'evidence_level', 'medium')}",
+                f"- 证据等级：{EVIDENCE_LEVEL_LABELS.get(getattr(signal, 'evidence_level', 'medium'), getattr(signal, 'evidence_level', 'medium'))}",
                 f"- 证据数：{signal.evidence_count}",
                 f"- 独立用户：{signal.unique_user_count}",
                 f"- 涉及视频：{signal.unique_video_count}",
                 f"- 重复证据：{signal.duplicate_evidence_count}",
                 f"- 信号强度：{signal.signal_strength}",
                 f"- 置信度：{signal.confidence}",
-                f"- 信号类型：{getattr(signal, 'signal_type', 'audience_pain')}",
+                f"- 信号类型：{SIGNAL_TYPE_LABELS.get(getattr(signal, 'signal_type', 'audience_pain'), getattr(signal, 'signal_type', 'audience_pain'))}",
                 "- 代表证据：",
             ]
         )
@@ -234,3 +271,14 @@ def _short_text(value: str, limit: int = 70) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "..."
+
+
+def _calibration_summary(value: dict) -> str:
+    if value.get("status") == "applied":
+        confidence = {"low": "低", "medium": "中", "high": "高"}.get(value.get("confidence"), "未知")
+        return (
+            f"已应用（可信度：{confidence}，匹配 {value.get('matched_records', 0)} 条，"
+            f"累计曝光 {value.get('impressions', 0)}，评分 {value.get('original_fit_score', 0)}"
+            f" → {value.get('calibrated_fit_score', 0)}）"
+        )
+    return str(value.get("reason") or "没有足够历史数据，保留证据评分。")
