@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.5.0] - 2026-08-02
+
+### Added
+
+- Persistent LLM topic-package completion cache keyed by prompt content, provider, model, and cache schema version.
+- Automatic `quality_report.json` and `analysis_metadata.json` outputs for every analysis run.
+
+### Changed
+
+- Cached completions are re-normalized, evidence-bound, audited, calibrated, and filtered on every run.
+- Markdown reports show the quality-gate result, evidence grounding rate, generation source, and cache activity.
+- LLM-requested runs explicitly fail the automatic quality gate when generation silently falls back to rules.
+
 ## [0.4.0] - 2026-07-27
 
 ### Added

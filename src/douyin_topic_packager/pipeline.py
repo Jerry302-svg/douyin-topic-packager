@@ -12,6 +12,7 @@ from .feedback import calibrate_topic_packages, load_performance_feedback
 from .io_utils import read_json, write_json
 from .llm import LLMClient
 from .packager import generate_topic_packages
+from .quality import evaluate_topic_run
 from .reports import render_topic_packages_markdown, write_markdown_report
 from .schemas import CommentItem, PainSignal, TopicPackageRun, VideoItem
 from .signals import build_angle_candidates, build_pain_signals, validate_angles
@@ -284,11 +285,13 @@ def analyze_comments_step(
     min_evidence_count: int = 0,
     performance_feedback_path: str | Path | None = None,
 ) -> Dict[str, str]:
+    root = Path(output_dir)
     videos = load_videos(videos_path)
     comments = load_comments(comments_path)
     pain_signals = filter_pain_signals(build_pain_signals(videos, comments), min_evidence_count=min_evidence_count)
     angle_candidates = build_angle_candidates(pain_signals)
     scorecards = validate_angles(angle_candidates, pain_signals)
+    cache_stats: Dict[str, int] = {}
     packages = generate_topic_packages(
         videos,
         pain_signals,
@@ -298,10 +301,23 @@ def analyze_comments_step(
         conversion_mode=conversion_mode,
         min_fit_score=min_fit_score,
         package_limit=package_limit,
+        cache_dir=root / ".analysis_cache",
+        cache_stats=cache_stats,
     )
     packages = calibrate_topic_packages(packages, load_performance_feedback(performance_feedback_path))
 
-    root = Path(output_dir)
+    required_generator = "llm" if llm_client is not None else ""
+    quality_result = evaluate_topic_run(
+        pain_signals=[item.to_dict() for item in pain_signals],
+        topic_packages=[item.to_dict() for item in packages],
+        required_generator=required_generator,
+    )
+    analysis_metadata = {
+        "required_generator": required_generator,
+        "generator_counts": quality_result["metrics"]["generator_counts"],
+        "cache": cache_stats,
+        "quality_gate_passed": quality_result["passed"],
+    }
     run = TopicPackageRun(
         source_url=source_url,
         resolved_url=resolved_url,
@@ -324,6 +340,8 @@ def analyze_comments_step(
         min_evidence_count=min_evidence_count,
         min_fit_score=min_fit_score,
         package_limit=package_limit,
+        quality_result=quality_result,
+        analysis_metadata=analysis_metadata,
     )
     return {
         "pain_signals": write_json([item.to_dict() for item in pain_signals], root / "pain_signals.json"),
@@ -331,6 +349,8 @@ def analyze_comments_step(
         "validation_scorecards": write_json([item.to_dict() for item in scorecards], root / "validation_scorecards.json"),
         "topic_packages": write_json([item.to_dict() for item in packages], root / "topic_packages.json"),
         "run": write_json(run.to_dict(), root / "run.json"),
+        "quality": write_json(quality_result, root / "quality_report.json"),
+        "analysis_metadata": write_json(analysis_metadata, root / "analysis_metadata.json"),
         "markdown": write_markdown_report(markdown, root / "topic_packages.md"),
     }
 
@@ -536,6 +556,7 @@ async def run_topic_package_pipeline(
                 if llm_client is not None and callable(getattr(llm_client, "snapshot_metrics", None))
                 else {}
             ),
+            "analysis": read_json(analyzed["analysis_metadata"]),
         },
     )
     return {**collected, **commented, **analyzed, "run_manifest": manifest}

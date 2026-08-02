@@ -1,8 +1,15 @@
 import asyncio
+import json
+from pathlib import Path
 
 from douyin_topic_packager.comments import CommentsCollector
 from douyin_topic_packager.feedback import calibrate_topic_packages
-from douyin_topic_packager.packager import audit_topic_packages, fallback_topic_packages
+from douyin_topic_packager.packager import (
+    audit_topic_packages,
+    fallback_topic_packages,
+    generate_topic_packages,
+)
+from douyin_topic_packager.pipeline import analyze_comments_step
 from douyin_topic_packager.privacy import sanitize_comment
 from douyin_topic_packager.reports import render_topic_packages_markdown
 from douyin_topic_packager.schemas import CommentItem, VideoItem
@@ -287,3 +294,115 @@ def test_comment_sanitizer_removes_identity_and_contact_details():
     assert "uid" not in safe.metadata
     assert "13800138000" not in safe.text
     assert "abcdef12" not in safe.text
+
+
+def test_llm_topic_package_cache_reuses_validated_completion(tmp_path):
+    comments = [
+        CommentItem(aweme_id="1", cid="1", text="不知道第一步怎么做，有没有简单办法？", metadata={"user_hash": "u1"}),
+        CommentItem(aweme_id="2", cid="2", text="第一步不知道怎么做，担心做错怎么办？", metadata={"user_hash": "u2"}),
+    ]
+    signals = build_pain_signals([], comments)
+    candidates = build_angle_candidates(signals)
+    scorecards = validate_angles(candidates, signals)
+    signal = signals[0]
+
+    class CacheClient:
+        class Config:
+            normalized_provider = "fake"
+            model = "cache-model"
+
+        config = Config()
+
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, temperature=0.2, max_tokens=5000):
+            self.calls += 1
+            return json.dumps(
+                {
+                    "topic_packages": [
+                        {
+                            "pain_signal_id": "P1",
+                            "brief_title": "第一步判断清单",
+                            "topic": "不知道第一步时先做什么",
+                            "pain_point": signal.pain_point,
+                            "evidence": signal.evidence,
+                            "target_audience": "刚开始行动但缺少路径的人",
+                            "opening_hook": "第一步不清楚时，先做这三个判断。",
+                            "recommended_angle": "给出三个低门槛动作",
+                            "proof_needed": "展示步骤清单和适用边界",
+                            "cta_direction": "留言你卡住的步骤。",
+                            "fit_score": 88,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+    client = CacheClient()
+    first_stats = {}
+    second_stats = {}
+    first = generate_topic_packages(
+        [],
+        signals,
+        candidates,
+        scorecards,
+        llm_client=client,
+        cache_dir=tmp_path,
+        cache_stats=first_stats,
+    )
+    second = generate_topic_packages(
+        [],
+        signals,
+        candidates,
+        scorecards,
+        llm_client=client,
+        cache_dir=tmp_path,
+        cache_stats=second_stats,
+    )
+
+    assert first and second
+    assert client.calls == 1
+    assert first_stats["misses"] == 1
+    assert second_stats["hits"] == 1
+
+
+def test_analysis_writes_quality_and_cache_metadata(tmp_path):
+    videos_path = Path(tmp_path) / "profile_videos.json"
+    comments_path = Path(tmp_path) / "comments.json"
+    videos_path.write_text(
+        json.dumps(
+            [
+                {"aweme_id": "1", "title": "第一步怎么做"},
+                {"aweme_id": "2", "title": "新手行动清单"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    comments_path.write_text(
+        json.dumps(
+            [
+                {"aweme_id": "1", "cid": "1", "text": "不知道第一步怎么做，有没有简单办法？", "metadata": {"user_hash": "u1"}},
+                {"aweme_id": "2", "cid": "2", "text": "第一步不知道怎么做，担心做错怎么办？", "metadata": {"user_hash": "u2"}},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    outputs = analyze_comments_step(
+        source_url="https://example.com",
+        resolved_url="https://example.com/user",
+        sec_uid="uid",
+        videos_path=videos_path,
+        comments_path=comments_path,
+        output_dir=tmp_path,
+    )
+    quality = json.loads(Path(outputs["quality"]).read_text(encoding="utf-8"))
+    metadata = json.loads(Path(outputs["analysis_metadata"]).read_text(encoding="utf-8"))
+
+    assert quality["passed"] is True
+    assert metadata["quality_gate_passed"] is True
+    assert metadata["cache"] == {}
+    assert "自动质量门禁：通过" in Path(outputs["markdown"]).read_text(encoding="utf-8")

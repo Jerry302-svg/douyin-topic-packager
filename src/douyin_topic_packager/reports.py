@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List
 
+from .quality import evaluate_topic_run
 from .schemas import PainSignal, TopicPackage, ValidationScorecard, VideoItem
 
 
@@ -43,7 +44,15 @@ def render_topic_packages_markdown(
     min_evidence_count: int = 0,
     min_fit_score: int = 0,
     package_limit: int = 0,
+    quality_result: Dict[str, Any] | None = None,
+    analysis_metadata: Dict[str, Any] | None = None,
 ) -> str:
+    quality_result = quality_result or evaluate_topic_run(
+        pain_signals=[item.to_dict() for item in pain_signals],
+        topic_packages=[item.to_dict() for item in topic_packages],
+    )
+    quality_metrics = quality_result["metrics"]
+    cache_stats = (analysis_metadata or {}).get("cache") or {}
     actionable_signals = [
         item
         for item in pain_signals
@@ -70,13 +79,23 @@ def render_topic_packages_markdown(
         f"- 跨视频支持信号：{len([item for item in pain_signals if item.unique_video_count >= 2])} 个",
         f"- 角度评分：{len(scorecards)} 个",
         f"- 选题包：{len(topic_packages)} 个",
+        f"- 自动质量门禁：{'通过' if quality_result['passed'] else '需要复核'}",
+        f"- 证据可回溯率：{quality_metrics['grounded_evidence_rate']:.0%}",
+        f"- 生成来源：{_generator_summary(quality_metrics.get('generator_counts') or {})}",
         f"- 最小证据数：{max(0, int(min_evidence_count or 0))}",
         f"- 最小适配分：{max(0, int(min_fit_score or 0))}",
         f"- 选题包数量上限：{max(0, int(package_limit or 0)) or '不限制'}",
+    ]
+    if cache_stats:
+        lines.append(
+            f"- 模型缓存：命中 {cache_stats.get('hits', 0)} 次，"
+            f"新请求 {cache_stats.get('misses', 0)} 次，修复 {cache_stats.get('repairs', 0)} 次"
+        )
+    lines.extend([
         "",
         "## 下一步动作",
         "",
-    ]
+    ])
     if publish_ready_packages:
         lines.append(f"- 优先拍摄前 {min(3, len(publish_ready_packages))} 条“可直接使用”选题，并保留对应证据截图。")
     elif review_required_packages:
@@ -282,3 +301,10 @@ def _calibration_summary(value: dict) -> str:
             f" → {value.get('calibrated_fit_score', 0)}）"
         )
     return str(value.get("reason") or "没有足够历史数据，保留证据评分。")
+
+
+def _generator_summary(counts: Dict[str, int]) -> str:
+    if not counts:
+        return "无可用选题包"
+    labels = {"llm": "LLM", "fallback_rules": "规则降级", "unknown": "未知"}
+    return "、".join(f"{labels.get(key, key)} {value} 条" for key, value in sorted(counts.items()))

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from .io_utils import read_json, write_json
 from .llm import LLMClient, parse_json_from_llm_text
 from .schemas import AngleCandidate, PainSignal, TopicPackage, ValidationScorecard, VideoItem
 
@@ -65,6 +68,7 @@ HIGH_STAKES_TERMS = (
 )
 
 ABSOLUTE_CLAIM_TERMS = ("一定", "保证", "百分百", "肯定能", "绝对", "无需核实")
+TOPIC_PACKAGE_CACHE_VERSION = 1
 
 
 def normalize_conversion_mode(value: str | None) -> str:
@@ -578,6 +582,13 @@ def audit_topic_packages(
             if package.external_verification_required
             else "exploratory"
         )
+        if package.target_audience in {"", "目标用户", "相关用户", "当前选题对应的目标用户"}:
+            pain_label = _concise_title(package.pain_point, max_length=24)
+            package.target_audience = (
+                f"正在经历“{pain_label}”且需要明确下一步的人"
+                if signal.signal_type == "audience_pain" and _signal_is_actionable(signal)
+                else f"可能关注“{pain_label}”的人，具体场景仍需进一步验证"
+            )
         package.experiment_variants = _experiment_variants(package)
         if package.confidence_level == "exploratory" or (
             package.confidence_level == "review_required"
@@ -589,11 +600,6 @@ def audit_topic_packages(
                 f"{source_label}中出现了这个方向，但当前只有 {signal.evidence_count} 条证据；"
                 "适合先补充评论、访谈或搜索反馈，再决定是否进入正式拍摄。"
             )
-            if package.target_audience in {"", "目标用户", "相关用户", "当前选题对应的目标用户"}:
-                package.target_audience = (
-                    f"可能关注“{_concise_title(package.pain_point, max_length=24)}”的人，"
-                    "具体场景仍需进一步验证"
-                )
             if signal.signal_type == "content_hypothesis":
                 package.production_suggestions = [
                     item for item in package.production_suggestions if "评论痛点" not in item
@@ -680,17 +686,45 @@ def generate_topic_packages(
     conversion_mode: str = "balanced",
     min_fit_score: int = 0,
     package_limit: int = 0,
+    cache_dir: str | Path | None = None,
+    cache_stats: Dict[str, int] | None = None,
 ) -> List[TopicPackage]:
     conversion_mode = normalize_conversion_mode(conversion_mode)
     if llm_client is not None:
+        stats = cache_stats if cache_stats is not None else {}
+        for key in ("hits", "misses", "invalidations", "repairs", "fallbacks"):
+            stats.setdefault(key, 0)
         try:
+            messages = build_topic_package_messages(
+                videos,
+                pain_signals,
+                candidates,
+                scorecards,
+                conversion_mode=conversion_mode,
+            )
+            cache_path = _topic_package_cache_path(cache_dir, llm_client, messages)
+            raw = _read_cached_completion(cache_path)
+            packages = normalize_llm_topic_packages(raw, pain_signals, conversion_mode=conversion_mode) if raw else []
+            if packages:
+                stats["hits"] += 1
+                packages = audit_topic_packages(
+                    packages,
+                    pain_signals,
+                    scorecards,
+                    conversion_mode=conversion_mode,
+                )
+                return filter_topic_packages(packages, min_fit_score=min_fit_score, package_limit=package_limit)
+            if raw:
+                stats["invalidations"] += 1
+            stats["misses"] += 1
             raw = llm_client.complete(
-                build_topic_package_messages(videos, pain_signals, candidates, scorecards, conversion_mode=conversion_mode),
+                messages,
                 temperature=0.35,
                 max_tokens=6000,
             )
             packages = normalize_llm_topic_packages(raw, pain_signals, conversion_mode=conversion_mode)
             if packages:
+                _write_cached_completion(cache_path, raw)
                 packages = audit_topic_packages(
                     packages,
                     pain_signals,
@@ -703,8 +737,10 @@ def generate_topic_packages(
                 temperature=0.0,
                 max_tokens=6000,
             )
+            stats["repairs"] += 1
             packages = normalize_llm_topic_packages(repaired, pain_signals, conversion_mode=conversion_mode)
             if packages:
+                _write_cached_completion(cache_path, repaired)
                 packages = audit_topic_packages(
                     packages,
                     pain_signals,
@@ -715,6 +751,42 @@ def generate_topic_packages(
             print("[WARN] LLM 输出未通过痛点与证据校验，已降级为规则版选题包。")
         except Exception as exc:  # noqa: BLE001
             print(f"[WARN] LLM 选题包生成失败，使用规则版结果：{exc}")
+        stats["fallbacks"] += 1
     packages = fallback_topic_packages(pain_signals, candidates, scorecards, conversion_mode=conversion_mode)
     packages = audit_topic_packages(packages, pain_signals, scorecards, conversion_mode=conversion_mode)
     return filter_topic_packages(packages, min_fit_score=min_fit_score, package_limit=package_limit)
+
+
+def _topic_package_cache_path(
+    cache_dir: str | Path | None,
+    llm_client: LLMClient,
+    messages: List[Dict[str, str]],
+) -> Path | None:
+    if cache_dir is None:
+        return None
+    config = getattr(llm_client, "config", None)
+    payload = {
+        "version": TOPIC_PACKAGE_CACHE_VERSION,
+        "provider": str(getattr(config, "normalized_provider", "") or ""),
+        "model": str(getattr(config, "model", "") or ""),
+        "messages": messages,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return Path(cache_dir) / "topic_packages" / f"{fingerprint}.json"
+
+
+def _read_cached_completion(path: Path | None) -> str:
+    if path is None or not path.exists():
+        return ""
+    try:
+        value = read_json(path)
+    except (OSError, ValueError, TypeError):
+        return ""
+    return str(value.get("raw") or "") if isinstance(value, dict) else ""
+
+
+def _write_cached_completion(path: Path | None, raw: str) -> None:
+    if path is not None and raw.strip():
+        write_json({"raw": raw}, path)
