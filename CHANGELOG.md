@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.6.0] - 2026-08-06
+
+### Added
+
+- Atomic `comments_checkpoint.json` snapshots with collection parameters, profile and content hashes, comments, and per-video status.
+- Actionable recommendations and failed-check identifiers in every automatic quality result.
+
+### Changed
+
+- Resumed runs can recover partial comment collection before a final run manifest exists and retry only unfinished videos.
+- Markdown reports show concrete repair actions when evidence, safety, audience, generator, or review checks fail.
+- Analysis metadata now records the exact failed quality checks.
+
 ## [0.5.0] - 2026-08-02
 
 ### Added

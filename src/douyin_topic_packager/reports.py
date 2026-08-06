@@ -91,6 +91,10 @@ def render_topic_packages_markdown(
             f"- 模型缓存：命中 {cache_stats.get('hits', 0)} 次，"
             f"新请求 {cache_stats.get('misses', 0)} 次，修复 {cache_stats.get('repairs', 0)} 次"
         )
+    if not quality_result["passed"]:
+        lines.append("- 质量修复建议：")
+        for recommendation in quality_result["recommendations"]:
+            lines.append(f"  - {recommendation}")
     lines.extend([
         "",
         "## 下一步动作",

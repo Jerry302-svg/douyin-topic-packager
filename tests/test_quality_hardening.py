@@ -250,14 +250,29 @@ def test_weak_only_report_labels_packages_as_exploratory():
 
 
 def test_offline_quality_gate_rejects_ungrounded_or_unsafe_packages():
+    signal = _grounded_signal()
+    package = _package()
     result = evaluate_topic_run(
-        pain_signals=[_grounded_signal().to_dict()],
-        topic_packages=[_package().to_dict()],
+        pain_signals=[signal.to_dict()],
+        topic_packages=[package.to_dict()],
     )
 
     assert result["passed"] is False
     assert result["metrics"]["grounded_evidence_rate"] == 0.0
     assert result["metrics"]["unsafe_instruction_count"] >= 1
+    assert "all_evidence_grounded" in result["failed_checks"]
+    assert any("evidence_refs" in item for item in result["recommendations"])
+
+    markdown = render_topic_packages_markdown(
+        source_url="https://example.com",
+        resolved_url="https://example.com/user",
+        sec_uid="uid",
+        videos=[],
+        pain_signals=[signal],
+        scorecards=[],
+        topic_packages=[package],
+    )
+    assert "质量修复建议" in markdown
 
 
 def test_grounded_evidence_normalizes_whitespace_in_text_and_reference():

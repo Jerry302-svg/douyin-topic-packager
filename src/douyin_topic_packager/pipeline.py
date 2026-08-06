@@ -19,6 +19,7 @@ from .signals import build_angle_candidates, build_pain_signals, validate_angles
 
 
 PROFILE_ARTIFACT_SCHEMA_VERSION = 2
+COMMENT_CHECKPOINT_SCHEMA_VERSION = 1
 COMMENT_RESUME_PARAMETER_KEYS = (
     "profile_url",
     "top_n",
@@ -93,6 +94,11 @@ def _parameter_hash(parameters: Dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def _value_hash(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
 def _file_hash(path: str | Path) -> str:
     target = Path(path)
     if not target.exists() or not target.is_file():
@@ -150,6 +156,54 @@ def _comments_resume_matches(root: Path, parameters: Dict[str, Any]) -> bool:
     )
 
 
+def _comment_resume_parameters(parameters: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: parameters.get(key) for key in COMMENT_RESUME_PARAMETER_KEYS}
+
+
+def _restore_comment_checkpoint(
+    root: Path,
+    parameters: Dict[str, Any],
+    videos_path: str | Path,
+) -> bool:
+    checkpoint_path = root / "comments_checkpoint.json"
+    if not checkpoint_path.exists():
+        return False
+    try:
+        checkpoint = read_json(checkpoint_path)
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(checkpoint, dict):
+        return False
+    videos = load_videos(videos_path)
+    expected_video_ids = [item.aweme_id for item in videos]
+    expected_parameters = _comment_resume_parameters(parameters)
+    comments = checkpoint.get("comments")
+    statuses = checkpoint.get("statuses")
+    if (
+        int(checkpoint.get("artifact_schema_version") or 0) != COMMENT_CHECKPOINT_SCHEMA_VERSION
+        or checkpoint.get("parameters") != expected_parameters
+        or checkpoint.get("parameter_hash") != _parameter_hash(expected_parameters)
+        or checkpoint.get("profile_videos_hash") != _file_hash(videos_path)
+        or checkpoint.get("video_ids") != expected_video_ids
+        or not isinstance(comments, list)
+        or not isinstance(statuses, dict)
+        or checkpoint.get("comments_hash") != _value_hash(comments)
+        or checkpoint.get("statuses_hash") != _value_hash(statuses)
+    ):
+        return False
+    valid_video_ids = set(expected_video_ids)
+    if any(
+        not isinstance(item, dict) or str(item.get("aweme_id") or "") not in valid_video_ids
+        for item in comments
+    ):
+        return False
+    if any(str(video_id) not in valid_video_ids for video_id in statuses):
+        return False
+    write_json(comments, root / "comments.json")
+    write_json(statuses, root / "comments_status.json")
+    return True
+
+
 def write_run_manifest(
     *,
     output_dir: str | Path,
@@ -160,6 +214,7 @@ def write_run_manifest(
     reused_profile: bool,
     reused_comments: bool,
     retried_comment_videos: int = 0,
+    restored_comment_checkpoint: bool = False,
     runtime_metadata: Dict[str, Any] | None = None,
 ) -> str:
     target = Path(output_dir) / "run_manifest.json"
@@ -172,6 +227,7 @@ def write_run_manifest(
             "reused_profile": bool(reused_profile),
             "reused_comments": bool(reused_comments),
             "retried_comment_videos": int(retried_comment_videos or 0),
+            "restored_comment_checkpoint": bool(restored_comment_checkpoint),
         },
         "counts": counts,
         "files": files,
@@ -234,6 +290,7 @@ async def collect_comments_step(
     saturation_pages: int = 3,
     saturation_min_new_ratio: float = 0.08,
     redact_user_data: bool = True,
+    checkpoint_parameters: Dict[str, Any] | None = None,
 ) -> Dict[str, str]:
     all_videos = load_videos(videos_path)
     videos = [item for item in all_videos if not only_video_ids or item.aweme_id in only_video_ids]
@@ -244,10 +301,25 @@ async def collect_comments_step(
     root = Path(output_dir)
     comments_target = root / "comments.json"
     status_target = root / "comments_status.json"
+    checkpoint_target = root / "comments_checkpoint.json"
 
     def checkpoint(partial: List[CommentItem], statuses: Dict[str, Dict[str, Any]]) -> None:
         merged_comments = [*kept_comments, *partial]
         merged_status = {**existing_status, **statuses}
+        resume_parameters = _comment_resume_parameters(checkpoint_parameters or {})
+        checkpoint_payload = {
+            "artifact_schema_version": COMMENT_CHECKPOINT_SCHEMA_VERSION,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "parameters": resume_parameters,
+            "parameter_hash": _parameter_hash(resume_parameters),
+            "profile_videos_hash": _file_hash(videos_path),
+            "video_ids": [item.aweme_id for item in all_videos],
+            "comments": [item.to_dict() for item in merged_comments],
+            "statuses": merged_status,
+        }
+        checkpoint_payload["comments_hash"] = _value_hash(checkpoint_payload["comments"])
+        checkpoint_payload["statuses_hash"] = _value_hash(checkpoint_payload["statuses"])
+        write_json(checkpoint_payload, checkpoint_target)
         write_json([item.to_dict() for item in merged_comments], comments_target)
         write_json(merged_status, status_target)
 
@@ -267,7 +339,11 @@ async def collect_comments_step(
     )
     comments, statuses = collected
     checkpoint(comments, statuses)
-    return {"comments": str(comments_target), "comments_status": str(status_target)}
+    return {
+        "comments": str(comments_target),
+        "comments_status": str(status_target),
+        "comments_checkpoint": str(checkpoint_target),
+    }
 
 
 def analyze_comments_step(
@@ -317,6 +393,7 @@ def analyze_comments_step(
         "generator_counts": quality_result["metrics"]["generator_counts"],
         "cache": cache_stats,
         "quality_gate_passed": quality_result["passed"],
+        "failed_quality_checks": quality_result["failed_checks"],
     }
     run = TopicPackageRun(
         source_url=source_url,
@@ -421,6 +498,7 @@ async def run_topic_package_pipeline(
     reused_profile = False
     reused_comments = False
     retried_comment_videos = 0
+    restored_comment_checkpoint = False
     if resume and videos_path.exists() and _profile_resume_matches(
         meta,
         profile_url,
@@ -445,7 +523,17 @@ async def run_topic_package_pipeline(
         )
     if not load_videos(collected["profile_videos"]):
         raise RuntimeError("未采集到视频，请检查 Cookie 是否过期、主页链接是否正确，或稍后重试")
-    if resume and reused_profile and comments_path.exists() and _comments_resume_matches(root, parameters):
+    comments_resume_allowed = False
+    if resume and reused_profile:
+        comments_resume_allowed = _comments_resume_matches(root, parameters)
+        if not comments_resume_allowed:
+            restored_comment_checkpoint = _restore_comment_checkpoint(
+                root,
+                parameters,
+                collected["profile_videos"],
+            )
+            comments_resume_allowed = restored_comment_checkpoint
+    if resume and reused_profile and comments_path.exists() and comments_resume_allowed:
         if comments_status_path.exists():
             try:
                 loaded_status = read_json(comments_status_path)
@@ -471,12 +559,18 @@ async def run_topic_package_pipeline(
                 existing_comments_path=comments_path,
                 existing_status_path=comments_status_path,
                 only_video_ids=pending_ids,
+                checkpoint_parameters=parameters,
                 **adaptive_comment_options,
             )
         else:
             commented = {
                 "comments": str(comments_path),
                 **({"comments_status": str(comments_status_path)} if comments_status_path.exists() else {}),
+                **(
+                    {"comments_checkpoint": str(root / "comments_checkpoint.json")}
+                    if (root / "comments_checkpoint.json").exists()
+                    else {}
+                ),
             }
             reused_comments = True
     else:
@@ -487,6 +581,7 @@ async def run_topic_package_pipeline(
             max_comments_per_video=max_comments_per_video,
             include_replies=include_replies,
             max_concurrency=comment_concurrency,
+            checkpoint_parameters=parameters,
             **adaptive_comment_options,
         )
     analyzed = analyze_comments_step(
@@ -547,6 +642,7 @@ async def run_topic_package_pipeline(
         reused_profile=reused_profile,
         reused_comments=reused_comments,
         retried_comment_videos=retried_comment_videos,
+        restored_comment_checkpoint=restored_comment_checkpoint,
         runtime_metadata={
             "duration_ms": int((time.perf_counter() - started) * 1000),
             "llm_provider": llm_client.config.normalized_provider if llm_client else "",

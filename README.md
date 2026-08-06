@@ -22,6 +22,8 @@ Cookie 登录/导入
 
 每次分析还会自动生成机器可读的质量门禁和模型缓存元数据，方便判断报告是否可用，以及本次结果来自 LLM 还是规则降级。
 
+质量不合格时会直接列出失败检查和修复动作；评论采集会同步写入独立原子检查点，首次运行中断也能继续。
+
 ## 环境要求
 
 - Python 3.10+
@@ -150,6 +152,12 @@ python -m douyin_topic_packager run \
 
 生成的 Markdown 报告会包含“运行摘要”和“下一步动作”，展示痛点数量、证据强弱、选题包数量、筛选条件，以及应直接拍摄、先核验还是继续补证据。
 
+### 0.6 首次中断恢复和质量修复建议
+
+评论采集现在会额外维护 `comments_checkpoint.json`。它把主页视频哈希、评论采集参数、已采评论、逐视频状态及内容哈希放进同一个原子快照；即使程序在第一次运行中途退出、还没有生成 `run_manifest.json`，再次使用相同参数执行 `--resume` 也只会补采失败或未完成的视频。账号、视频文件、内容哈希或采集参数不匹配时不会复用。
+
+`quality_report.json` 新增 `failed_checks` 和中文 `recommendations`。Markdown 报告会在证据不落地、标题过长、受众过泛、LLM 降级或核验状态错误时，直接展示对应修复动作。
+
 ### 0.5 自动质量门禁和模型缓存
 
 启用 LLM 后，模型原始响应会缓存在输出目录的 `.analysis_cache/` 中。缓存键包含完整输入、提示词版本、服务商和模型，不包含 API Key；相同输入重跑可直接复用。复用后仍会重新执行证据绑定、风险审计、效果校准和参数筛选，缓存不会跳过质量控制。
@@ -211,6 +219,7 @@ python -m douyin_topic_packager analyze --comments outputs/topic_packages/commen
 profile_videos.json
 comments.json
 comments_status.json
+comments_checkpoint.json
 pain_signals.json
 angle_candidates.json
 validation_scorecards.json
@@ -234,7 +243,7 @@ python -m douyin_topic_packager evaluate \
   --require-generator llm
 ```
 
-它会检查证据溯源率、未知痛点、虚构素材指令、越界个案判断、生成器来源和可发布选题数量。`--require-generator llm` 可以防止模型输出被规则版静默降级后仍误判为模型实测成功。发布新版本或更换 LLM 时，建议用同一份脱敏输入连续运行三次；详细标准见 `evals/README.md`。
+它会检查证据溯源率、未知痛点、虚构素材指令、越界个案判断、生成器来源和可发布选题数量，并为失败项返回修复建议。`--require-generator llm` 可以防止模型输出被规则版静默降级后仍误判为模型实测成功。发布新版本或更换 LLM 时，建议用同一份脱敏输入连续运行三次；详细标准见 `evals/README.md`。
 
 ## 测试
 

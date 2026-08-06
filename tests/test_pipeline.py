@@ -175,9 +175,11 @@ def test_run_topic_package_pipeline_resume_recollects_when_parameters_change(tmp
         max_comments_per_video,
         include_replies,
         max_concurrency,
+        checkpoint_parameters,
     ):
         calls["comments"] += 1
         assert max_comments_per_video == 9
+        assert checkpoint_parameters["top_n"] == 5
         (root / "comments.json").write_text(
             json.dumps(
                 [
@@ -356,6 +358,157 @@ def test_resume_retries_only_failed_comment_videos(tmp_path, monkeypatch):
     assert calls == [{"200"}]
     assert manifest["resume"]["retried_comment_videos"] == 1
     assert manifest["counts"]["failed_comment_videos"] == 0
+
+
+def test_resume_restores_atomic_comment_checkpoint_without_final_manifest(tmp_path, monkeypatch):
+    root = Path(tmp_path)
+    videos = [
+        {"aweme_id": "100", "title": "第一步怎么办", "comment_count": 2},
+        {"aweme_id": "200", "title": "第二条", "comment_count": 1},
+    ]
+    videos_path = root / "profile_videos.json"
+    videos_path.write_text(json.dumps(videos, ensure_ascii=False), encoding="utf-8")
+    (root / "profile_meta.json").write_text(
+        json.dumps(
+            {
+                "artifact_schema_version": pipeline.PROFILE_ARTIFACT_SCHEMA_VERSION,
+                "source_url": "https://v.douyin.com/example/",
+                "resolved_url": "https://www.douyin.com/user/test",
+                "sec_uid": "uid",
+                "top_n": 2,
+                "scan_pages": 10,
+                "profile_videos_hash": pipeline._file_hash(videos_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    parameters = pipeline._run_parameters(
+        profile_url="https://v.douyin.com/example/",
+        top_n=2,
+        max_comments_per_video=10,
+        conversion_mode="balanced",
+        min_fit_score=0,
+        package_limit=0,
+        min_evidence_count=0,
+        scan_pages=10,
+        include_replies=False,
+        comment_concurrency=2,
+        target_valid_comments=0,
+        max_comment_pages=0,
+        saturation_pages=3,
+        saturation_min_new_ratio=0.08,
+        redact_user_data=True,
+        performance_feedback_path="",
+    )
+    checkpoint_path = root / "comments_checkpoint.json"
+    checkpoint_comments = [
+        {"aweme_id": "100", "cid": "c1", "text": "第一步不知道怎么做？"}
+    ]
+    checkpoint_statuses = {
+        "100": {"status": "success", "comment_count": 1, "error": ""},
+        "200": {"status": "failed", "comment_count": 0, "error": "timeout"},
+    }
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "artifact_schema_version": pipeline.COMMENT_CHECKPOINT_SCHEMA_VERSION,
+                "parameters": pipeline._comment_resume_parameters(parameters),
+                "parameter_hash": pipeline._parameter_hash(
+                    pipeline._comment_resume_parameters(parameters)
+                ),
+                "profile_videos_hash": pipeline._file_hash(videos_path),
+                "video_ids": ["100", "200"],
+                "comments": checkpoint_comments,
+                "comments_hash": pipeline._value_hash(checkpoint_comments),
+                "statuses": checkpoint_statuses,
+                "statuses_hash": pipeline._value_hash(checkpoint_statuses),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    async def forbidden_collect(*args, **kwargs):
+        raise AssertionError("profile should be reused")
+
+    calls = []
+
+    async def retry_failed(videos_path, **kwargs):
+        calls.append(kwargs["only_video_ids"])
+        merged = [
+            {"aweme_id": "100", "cid": "c1", "text": "第一步不知道怎么做？"},
+            {"aweme_id": "200", "cid": "c2", "text": "第二步做错了怎么办？"},
+        ]
+        (root / "comments.json").write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
+        (root / "comments_status.json").write_text(
+            json.dumps(
+                {
+                    "100": {"status": "success", "comment_count": 1, "error": ""},
+                    "200": {"status": "success", "comment_count": 1, "error": ""},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "comments": str(root / "comments.json"),
+            "comments_status": str(root / "comments_status.json"),
+            "comments_checkpoint": str(checkpoint_path),
+        }
+
+    monkeypatch.setattr(pipeline, "collect_profile_step", forbidden_collect)
+    monkeypatch.setattr(pipeline, "collect_comments_step", retry_failed)
+
+    outputs = asyncio.run(
+        pipeline.run_topic_package_pipeline(
+            profile_url="https://v.douyin.com/example/",
+            output_dir=root,
+            top_n=2,
+            max_comments_per_video=10,
+            resume=True,
+        )
+    )
+    manifest = json.loads(Path(outputs["run_manifest"]).read_text(encoding="utf-8"))
+    comments = json.loads(Path(outputs["comments"]).read_text(encoding="utf-8"))
+
+    assert calls == [{"200"}]
+    assert len(comments) == 2
+    assert manifest["resume"]["retried_comment_videos"] == 1
+    assert manifest["resume"]["restored_comment_checkpoint"] is True
+
+
+def test_collect_comments_step_writes_combined_atomic_checkpoint(tmp_path, monkeypatch):
+    root = Path(tmp_path)
+    videos_path = root / "profile_videos.json"
+    videos_path.write_text(
+        json.dumps([{"aweme_id": "100", "title": "第一步怎么办"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    parameters = {"profile_url": "https://v.douyin.com/example/", "top_n": 1}
+    comment = pipeline.CommentItem(aweme_id="100", cid="c1", text="第一步不知道怎么做？")
+    statuses = {"100": {"status": "success", "comment_count": 1, "error": ""}}
+
+    async def fake_collect(videos, **kwargs):
+        kwargs["progress_callback"]([comment], statuses)
+        return [comment], statuses
+
+    monkeypatch.setattr(pipeline, "collect_comments_for_videos", fake_collect)
+
+    outputs = asyncio.run(
+        pipeline.collect_comments_step(
+            videos_path,
+            output_dir=root,
+            checkpoint_parameters=parameters,
+        )
+    )
+    checkpoint = json.loads(Path(outputs["comments_checkpoint"]).read_text(encoding="utf-8"))
+    expected_parameters = pipeline._comment_resume_parameters(parameters)
+
+    assert checkpoint["profile_videos_hash"] == pipeline._file_hash(videos_path)
+    assert checkpoint["parameter_hash"] == pipeline._parameter_hash(expected_parameters)
+    assert checkpoint["comments_hash"] == pipeline._value_hash(checkpoint["comments"])
+    assert checkpoint["statuses_hash"] == pipeline._value_hash(checkpoint["statuses"])
+    assert checkpoint["comments"][0]["cid"] == "c1"
+    assert checkpoint["statuses"]["100"]["status"] == "success"
 
 
 def test_profile_resume_rejects_missing_metadata_cross_account_and_tampering(tmp_path):

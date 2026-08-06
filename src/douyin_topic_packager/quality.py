@@ -20,6 +20,16 @@ UNSAFE_PHRASES = (
     "帮你定位",
 )
 GENERIC_AUDIENCES = {"", "目标用户", "相关用户", "当前选题对应的目标用户"}
+CHECK_RECOMMENDATIONS = {
+    "all_evidence_grounded": "重新绑定选题证据，确保每条引用都能在 evidence_refs 中逐字找到。",
+    "all_pains_known": "删除输入痛点信号中不存在的选题，或重新关联正确的 pain_signal_id。",
+    "no_unsafe_instructions": "移除虚构案例、承诺结果、个案诊断和敏感信息收集指令。",
+    "titles_are_concise": "将标题压缩到 36 个字符以内，只保留一个核心判断。",
+    "audiences_are_specific": "根据痛点、阶段或约束补充具体目标人群。",
+    "required_generator_used": "检查模型配置与原始输出，避免把规则降级结果当成 LLM 实测。",
+    "packages_generated": "降低筛选门槛或补充有效评论证据后重新生成选题包。",
+    "external_verification_is_gated": "需要外部核验的选题必须降级为核验后使用。",
+}
 
 
 def _normalized_text(value: Any) -> str:
@@ -93,9 +103,12 @@ def evaluate_topic_run(
         "packages_generated": bool(packages),
         "external_verification_is_gated": review_gate_violations == 0,
     }
+    failed_checks = [key for key, passed in checks.items() if not passed]
     return {
         "passed": all(checks.values()),
         "checks": checks,
+        "failed_checks": failed_checks,
+        "recommendations": [CHECK_RECOMMENDATIONS[key] for key in failed_checks],
         "metrics": {
             "grounded_evidence_rate": grounded_rate,
             "unknown_pain_count": unknown_pain_count,
