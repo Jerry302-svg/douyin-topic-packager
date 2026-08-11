@@ -278,7 +278,9 @@ def _append_shooting_order(lines: List[str], topic_packages: List[TopicPackage])
 def write_markdown_report(content: str, path: str | Path) -> str:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    temp = target.with_suffix(f"{target.suffix}.tmp")
+    temp.write_text(content, encoding="utf-8")
+    temp.replace(target)
     return str(target)
 
 

@@ -245,6 +245,15 @@ python -m douyin_topic_packager evaluate \
 
 它会检查证据溯源率、未知痛点、虚构素材指令、越界个案判断、生成器来源和可发布选题数量，并为失败项返回修复建议。`--require-generator llm` 可以防止模型输出被规则版静默降级后仍误判为模型实测成功。发布新版本或更换 LLM 时，建议用同一份脱敏输入连续运行三次；详细标准见 `evals/README.md`。
 
+需要验收整次运行时，使用 manifest 一次检查所有已记录产物的哈希和质量门禁：
+
+```bash
+python -m douyin_topic_packager verify-run \
+  --manifest outputs/topic_packages/run_manifest.json
+```
+
+命令通过时退出码为 0；产物缺失、被覆盖或质量门禁未通过时退出码为 1。只想核对文件完整性、允许报告进入人工复核时，可增加 `--allow-quality-review`。
+
 ## 测试
 
 开发或维护时建议安装开发依赖后运行测试：

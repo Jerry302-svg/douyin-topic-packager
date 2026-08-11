@@ -20,6 +20,14 @@ from .signals import build_angle_candidates, build_pain_signals, validate_angles
 
 PROFILE_ARTIFACT_SCHEMA_VERSION = 2
 COMMENT_CHECKPOINT_SCHEMA_VERSION = 1
+RUN_MANIFEST_SCHEMA_VERSION = 1
+REQUIRED_COMPLETED_FILES = (
+    "pain_signals",
+    "topic_packages",
+    "quality",
+    "analysis_metadata",
+    "markdown",
+)
 COMMENT_RESUME_PARAMETER_KEYS = (
     "profile_url",
     "top_n",
@@ -108,6 +116,108 @@ def _file_hash(path: str | Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()[:16]
+
+
+def _resolve_manifest_file(manifest_path: Path, recorded_path: str | Path) -> Path:
+    recorded = Path(recorded_path)
+    candidates = [recorded] if recorded.is_absolute() else [
+        recorded,
+        manifest_path.parent / recorded,
+        manifest_path.parent / recorded.name,
+    ]
+    return next((candidate for candidate in candidates if candidate.is_file()), candidates[-1])
+
+
+def verify_run_manifest(
+    path: str | Path,
+    *,
+    require_quality_pass: bool = True,
+) -> Dict[str, Any]:
+    target = Path(path)
+    if target.is_dir():
+        target = target / "run_manifest.json"
+    errors: List[str] = []
+    warnings: List[str] = []
+    verified_artifacts: List[str] = []
+    try:
+        manifest = read_json(target)
+    except (OSError, ValueError, TypeError) as exc:
+        return {
+            "passed": False,
+            "manifest": str(target),
+            "schema_version": None,
+            "quality_gate_passed": False,
+            "verified_artifacts": [],
+            "warnings": [],
+            "errors": [f"无法读取运行清单：{exc}"],
+        }
+    if not isinstance(manifest, dict):
+        errors.append("运行清单必须是 JSON 对象")
+        manifest = {}
+    schema_version = manifest.get("artifact_schema_version")
+    if schema_version is None:
+        warnings.append("运行清单来自旧版本，未声明 artifact_schema_version")
+    elif schema_version != RUN_MANIFEST_SCHEMA_VERSION:
+        errors.append(
+            f"运行清单版本不兼容：期望 {RUN_MANIFEST_SCHEMA_VERSION}，实际 {schema_version!r}"
+        )
+    files = manifest.get("files")
+    provenance = manifest.get("provenance")
+    if not isinstance(files, dict):
+        errors.append("运行清单缺少 files")
+        files = {}
+    if not isinstance(provenance, dict):
+        errors.append("运行清单缺少 provenance")
+        provenance = {}
+    file_hashes = provenance.get("file_hashes")
+    if not isinstance(file_hashes, dict):
+        errors.append("运行清单缺少 provenance.file_hashes")
+        file_hashes = {}
+    for name in REQUIRED_COMPLETED_FILES:
+        if not files.get(name):
+            errors.append(f"缺少核心产物路径：{name}")
+        if not file_hashes.get(name):
+            errors.append(f"缺少核心产物哈希：{name}")
+    for name, expected_hash in file_hashes.items():
+        if not expected_hash:
+            continue
+        recorded_path = files.get(name)
+        if not recorded_path:
+            errors.append(f"哈希没有对应产物路径：{name}")
+            continue
+        if not isinstance(recorded_path, (str, Path)):
+            errors.append(f"产物路径格式无效：{name}")
+            continue
+        artifact_path = _resolve_manifest_file(target, recorded_path)
+        actual_hash = _file_hash(artifact_path)
+        if not actual_hash:
+            errors.append(f"产物不存在：{artifact_path.name}")
+        elif actual_hash != expected_hash:
+            errors.append(f"产物哈希不匹配：{artifact_path.name}")
+        else:
+            verified_artifacts.append(name)
+    quality_gate_passed = False
+    quality_recorded_path = files.get("quality")
+    if isinstance(quality_recorded_path, (str, Path)):
+        quality_path = _resolve_manifest_file(target, quality_recorded_path)
+        try:
+            quality_result = read_json(quality_path)
+            quality_gate_passed = bool(quality_result.get("passed"))
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            errors.append(f"无法读取质量报告：{exc}")
+    elif quality_recorded_path:
+        errors.append("质量报告路径格式无效")
+    if require_quality_pass and not quality_gate_passed:
+        errors.append("质量门禁未通过")
+    return {
+        "passed": not errors,
+        "manifest": str(target),
+        "schema_version": schema_version,
+        "quality_gate_passed": quality_gate_passed,
+        "verified_artifacts": sorted(verified_artifacts),
+        "warnings": warnings,
+        "errors": errors,
+    }
 
 
 def _profile_resume_matches(
@@ -219,6 +329,7 @@ def write_run_manifest(
 ) -> str:
     target = Path(output_dir) / "run_manifest.json"
     payload = {
+        "artifact_schema_version": RUN_MANIFEST_SCHEMA_VERSION,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "parameters": parameters,
         "parameter_hash": _parameter_hash(parameters),

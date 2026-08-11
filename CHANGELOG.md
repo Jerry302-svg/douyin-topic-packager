@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.7.0] - 2026-08-11
+
+### Added
+
+- A `verify-run` command that checks core artifact hashes and the quality gate in one offline acceptance step.
+- Explicit schema versioning for newly generated run manifests, while retaining verification support for legacy manifests.
+
+### Changed
+
+- The final Markdown report is written atomically to avoid a partial report after interruption.
+
 ## [0.6.0] - 2026-08-06
 
 ### Added

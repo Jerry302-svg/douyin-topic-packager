@@ -11,7 +11,13 @@ from .diagnostics import diagnostics_has_errors, format_diagnostics, run_diagnos
 from .io_utils import read_json
 from .llm import LLMClient, load_dotenv
 from .packager import CONVERSION_MODE_INSTRUCTIONS
-from .pipeline import analyze_comments_step, collect_comments_step, collect_profile_step, run_topic_package_pipeline
+from .pipeline import (
+    analyze_comments_step,
+    collect_comments_step,
+    collect_profile_step,
+    run_topic_package_pipeline,
+    verify_run_manifest,
+)
 from .quality import evaluate_topic_run
 
 
@@ -116,6 +122,10 @@ def main() -> None:
         help="要求全部选题包来自指定生成器；模型回归时建议使用 llm",
     )
 
+    verify = subparsers.add_parser("verify-run", help="验收整次运行的产物哈希和质量门禁")
+    verify.add_argument("--manifest", default="outputs/topic_packages/run_manifest.json", help="run_manifest.json 路径")
+    verify.add_argument("--allow-quality-review", action="store_true", help="只校验产物完整性，允许质量门禁处于待复核状态")
+
     run = subparsers.add_parser("run", help="从主页分享链接直接生成选题包")
     run.add_argument("--profile-url", required=True, help="抖音博主主页分享链接或包含链接的整段分享文本")
     run.add_argument("--top-n", type=int, default=20, help="采集数量，默认 Top20")
@@ -181,6 +191,16 @@ def main() -> None:
             pain_signals=json.loads(Path(args.pain_signals).read_text(encoding="utf-8")),
             topic_packages=json.loads(Path(args.topic_packages).read_text(encoding="utf-8")),
             required_generator=args.require_generator,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if not result["passed"]:
+            raise SystemExit(1)
+        return
+
+    if args.command == "verify-run":
+        result = verify_run_manifest(
+            args.manifest,
+            require_quality_pass=not args.allow_quality_review,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result["passed"]:

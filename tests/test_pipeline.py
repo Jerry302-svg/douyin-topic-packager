@@ -7,6 +7,51 @@ import pytest
 from douyin_topic_packager import pipeline
 
 
+def test_verify_run_manifest_detects_changed_artifact(tmp_path):
+    root = Path(tmp_path)
+    files = {
+        "pain_signals": pipeline.write_json([], root / "pain_signals.json"),
+        "topic_packages": pipeline.write_json([], root / "topic_packages.json"),
+        "quality": pipeline.write_json({"passed": True}, root / "quality_report.json"),
+        "analysis_metadata": pipeline.write_json({}, root / "analysis_metadata.json"),
+        "markdown": pipeline.write_markdown_report("# report\n", root / "topic_packages.md"),
+    }
+    manifest = pipeline.write_run_manifest(
+        output_dir=root,
+        parameters={},
+        files=files,
+        counts={},
+        resume=False,
+        reused_profile=False,
+        reused_comments=False,
+    )
+
+    result = pipeline.verify_run_manifest(manifest)
+    assert result["passed"] is True
+    assert result["quality_gate_passed"] is True
+    assert set(files) <= set(result["verified_artifacts"])
+    assert not list(root.glob("*.tmp"))
+
+    Path(files["markdown"]).write_text("tampered", encoding="utf-8")
+    result = pipeline.verify_run_manifest(manifest)
+    assert result["passed"] is False
+    assert "产物哈希不匹配：topic_packages.md" in result["errors"]
+
+
+def test_verify_run_manifest_returns_errors_for_malformed_manifest(tmp_path):
+    manifest = tmp_path / "run_manifest.json"
+    manifest.write_text(
+        json.dumps({"artifact_schema_version": 1, "files": [], "provenance": []}),
+        encoding="utf-8",
+    )
+
+    result = pipeline.verify_run_manifest(manifest)
+
+    assert result["passed"] is False
+    assert "运行清单缺少 files" in result["errors"]
+    assert "运行清单缺少 provenance" in result["errors"]
+
+
 def test_run_topic_package_pipeline_resume_reuses_existing_files_and_filters_evidence(tmp_path, monkeypatch):
     root = Path(tmp_path)
     videos_path = root / "profile_videos.json"
@@ -209,6 +254,7 @@ def test_run_topic_package_pipeline_resume_recollects_when_parameters_change(tmp
 
     assert calls == {"collect": 1, "comments": 1}
     assert outputs["sec_uid"] == "new_sec_uid"
+    assert run_manifest["artifact_schema_version"] == pipeline.RUN_MANIFEST_SCHEMA_VERSION
     assert run_manifest["parameters"]["top_n"] == 5
     assert run_manifest["parameters"]["max_comments_per_video"] == 9
 
